@@ -209,6 +209,24 @@ ul.watch .wi { margin-right: 6px; }
 
 .grudge.revenge { color: var(--gold-bright); border-top: none; padding-top: 2px; }
 
+/* pick'em */
+.pk-game { display: flex; flex-direction: column; gap: 8px; }
+.pk-team {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  background: var(--surface-2); color: var(--ink); border: 1px solid var(--border);
+  border-radius: 9px; padding: 9px 12px; font-size: 13.5px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.pk-team:hover:not(:disabled) { border-color: var(--muted); }
+.pk-team.on { border-color: var(--good); background: rgba(12, 163, 12, 0.12); }
+.pk-team.on::after { content: "✓"; margin-left: auto; color: var(--good); font-weight: 800; }
+.pk-team:disabled { opacity: 0.6; cursor: default; }
+.pk-team .ava { width: 20px; height: 20px; }
+.poll-list { max-width: 420px; }
+.poll-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--grid); }
+.poll-row .poll-btns { margin-left: auto; display: flex; gap: 6px; }
+.poll-row .btn { padding: 3px 9px; font-size: 11px; }
+
 /* clickable player name -> passport */
 .pl { cursor: pointer; border-bottom: 1px dotted var(--muted); }
 .pl:hover { color: var(--blue); border-bottom-color: var(--blue); }

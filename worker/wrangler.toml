@@ -1,0 +1,10 @@
+name = "banditos-picks"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+[vars]
+LEAGUE_ID = "1315162051303194624"
+
+[[kv_namespaces]]
+binding = "PICKS"
+id = "ab2f7536f9834ccb9dd903718ca70197"

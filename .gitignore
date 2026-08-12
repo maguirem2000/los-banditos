@@ -1,2 +1,3 @@
 data/raw/players_nfl.json
 .DS_Store
+worker/.pins.json

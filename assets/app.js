@@ -111,6 +111,7 @@
     h2h: { label: "Head-to-Head", render: vH2H },
     records: { label: "Record Book", render: vRecords },
     power: { label: "Power Rankings", render: vPower },
+    picks: { label: "Pick'em & Poll", render: vPicks },
     franchises: { label: "Franchises", render: vFranchise },
     elo: { label: "Elo Ratings", render: vElo },
     players: { label: "Passports", render: vPlayers },
@@ -124,7 +125,7 @@
   /* nav groups: 6 top-level sections, sub-pages as pills */
   const GROUPS = [
     { label: "Home", views: { home: "Home" } },
-    { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds" } },
+    { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds", picks: "Pick'em & Poll" } },
     { label: "History", views: { records: "Record Book", h2h: "Head-to-Head", elo: "Elo Ratings", awards: "Awards", players: "Passports" } },
     { label: "Teams", views: { franchises: "Franchise Pages", bench: "Boneheads" } },
     { label: "Moves", views: { trades: "Trades & Waivers", drafts: "Drafts" } },
@@ -743,6 +744,149 @@
       box.querySelectorAll(`[data-line="${CSS.escape(it.dataset.series)}"]`).forEach(line =>
         line.style.display = it.classList.contains("off") ? "none" : "");
     });
+  }
+
+  /* ---------- PICK'EM & POWER POLL ---------- */
+  const PICKS_API = "https://banditos-picks.lbffl.workers.dev";
+  const pk = { week: null, sel: {}, poll: null, subs: null, season: null, msg: "", sending: false };
+
+  const gameKey = g => [g.a.uid, g.b.uid].sort().join("|");
+
+  async function loadPicksData(week) {
+    try {
+      const [subs, season] = await Promise.all([
+        fetch(`${PICKS_API}/subs?season=${D.currentSeason}&week=${week}`).then(r => r.json()),
+        pk.season || fetch(`${PICKS_API}/season?season=${D.currentSeason}`).then(r => r.json()),
+      ]);
+      pk.subs = subs; pk.season = season;
+      if (state.view === "picks") render();
+    } catch (e) { pk.subs = { error: true }; if (state.view === "picks") render(); }
+  }
+
+  function myIdentity() {
+    try { return JSON.parse(localStorage.getItem("banditos_id") || "null"); } catch (e) { return null; }
+  }
+
+  async function submitPicks(week, games) {
+    const uid = $("#pk-who")?.value, pin = $("#pk-pin")?.value.trim();
+    if (!uid || !pin) { pk.msg = "Pick who you are and enter your PIN."; render(); return; }
+    const picks = {};
+    games.forEach(g => { const k = gameKey(g); if (pk.sel[k]) picks[k] = pk.sel[k]; });
+    if (Object.keys(picks).length < games.length) { pk.msg = "Pick a winner in every game first."; render(); return; }
+    pk.sending = true; pk.msg = ""; render();
+    try {
+      const r = await fetch(`${PICKS_API}/submit`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid, pin, season: D.currentSeason, week, picks, poll: pk.poll }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        localStorage.setItem("banditos_id", JSON.stringify({ uid, pin }));
+        pk.msg = "✓ Submitted. You can resubmit until Thursday kickoff.";
+        pk.subs = null; loadPicksData(week);
+      } else pk.msg = "✗ " + (j.error || "failed");
+    } catch (e) { pk.msg = "✗ network error"; }
+    pk.sending = false; render();
+  }
+
+  function vPicks() {
+    if (!LIVE.loaded) return '<div class="card"><p class="note">Connecting to Sleeper…</p></div>';
+    const week = pk.week || LIVE.week || 1;
+    pk.week = week;
+    const games = weekMatchups(D.currentSeason, week).filter(g => g.type === "regular" || g.week < D.currentLeague.playoffWeekStart);
+    if (pk.subs === null) { loadPicksData(week); }
+    const active = currentStandings().map(s => s.uid);
+    if (!pk.poll) {
+      const ps = powerSeries(D.currentSeason);
+      pk.poll = ps ? ps.uids.slice().sort((a, b) => ps.series[b][ps.series[b].length - 1] - ps.series[a][ps.series[a].length - 1]) : active.slice();
+    }
+    const me = myIdentity();
+    const locked = pk.subs && pk.subs.locked;
+
+    const pickCards = games.map(g => {
+      const k = gameKey(g);
+      const btn = t => `<button class="pk-team ${pk.sel[k] === t.uid ? "on" : ""}" data-pick="${esc(k)}" data-team="${esc(t.uid)}" ${locked ? "disabled" : ""}>
+        ${avatarHtml(t.uid, 20)} ${esc(nameOf(t.uid))}</button>`;
+      let crowd = "";
+      if (locked && pk.subs.subs?.length) {
+        const votes = pk.subs.subs.filter(s => s.picks && s.picks[k]);
+        if (votes.length) {
+          const aPct = Math.round(votes.filter(s => s.picks[k] === g.a.uid).length / votes.length * 100);
+          crowd = `<div class="grudge">Crowd: ${aPct}% ${esc(nameOf(g.a.uid))} · ${100 - aPct}% ${esc(nameOf(g.b.uid))}</div>`;
+        }
+      }
+      return `<div class="matchup pk-game">${btn(g.a)}${btn(g.b)}${crowd}</div>`;
+    }).join("");
+
+    const pollRows = pk.poll.map((u, i) => `
+      <div class="poll-row">
+        <span class="rank-cell">${i + 1}</span>${mgrChip(u)}
+        <span class="poll-btns">
+          <button class="btn" data-pollmove="${esc(u)}|up" ${i === 0 || locked ? "disabled" : ""}>▲</button>
+          <button class="btn" data-pollmove="${esc(u)}|down" ${i === pk.poll.length - 1 || locked ? "disabled" : ""}>▼</button>
+        </span>
+      </div>`).join("");
+
+    const whoOpts = active.map(u => `<option value="${esc(u)}" ${me && me.uid === u ? "selected" : ""}>${esc(nameOf(u))}</option>`).join("");
+    const submittedNote = pk.subs && !pk.subs.locked && pk.subs.submitted
+      ? `<p class="note">${pk.subs.submitted.length}/8 in: ${pk.subs.submitted.map(nameOf).join(", ") || "nobody yet"}</p>` : "";
+
+    /* leaderboard from locked weeks */
+    let leader = "";
+    if (pk.season) {
+      const scores = {};
+      Object.entries(pk.season).forEach(([wk, data]) => {
+        if (!data.locked) return;
+        const wkGames = weekMatchups(D.currentSeason, Number(wk)).filter(g => g.played);
+        data.subs.forEach(s => {
+          if (!s.picks) return;
+          let pts = 0;
+          wkGames.forEach(g => {
+            const winner = g.a.pts > g.b.pts ? g.a.uid : g.b.pts > g.a.pts ? g.b.uid : null;
+            if (winner && s.picks[gameKey(g)] === winner) pts++;
+          });
+          scores[s.uid] = (scores[s.uid] || 0) + pts;
+        });
+      });
+      const rows = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+      if (rows.length) {
+        leader = `<div class="card"><h2>Pick'em Leaderboard <span class="tag">1 pt per correct pick · season-long</span></h2>
+          <div class="table-scroll"><table><tr><th></th><th>Manager</th><th class="num">Correct</th></tr>
+          ${rows.map(([u, p], i) => `<tr class="me-row"><td class="rank-cell">${i + 1}</td><td>${mgrChip(u)}</td><td class="num"><b>${p}</b></td></tr>`).join("")}
+          </table></div></div>`;
+      }
+      /* league poll aggregate for this week (if locked) */
+      const wkData = pk.season[String(week)];
+      if (wkData?.locked) {
+        const ranks = {};
+        wkData.subs.forEach(s => (s.poll || []).forEach((u, i) => { (ranks[u] = ranks[u] || []).push(i + 1); }));
+        const agg = Object.entries(ranks).map(([u, rs]) => ({ u, avg: rs.reduce((a, b) => a + b, 0) / rs.length }))
+          .sort((a, b) => a.avg - b.avg);
+        if (agg.length) {
+          leader += `<div class="card"><h2>League Poll <span class="tag">week ${week} · average rank from ${wkData.subs.length} ballots</span></h2>
+            <div class="table-scroll"><table><tr><th></th><th>Team</th><th class="num">Avg Rank</th></tr>
+            ${agg.map((r, i) => `<tr class="me-row"><td class="rank-cell">${i + 1}</td><td>${mgrChip(r.u)}</td><td class="num">${r.avg.toFixed(1)}</td></tr>`).join("")}
+            </table></div></div>`;
+        }
+      }
+    }
+
+    return `
+      <div class="card"><h2>Week ${week} Pick'em ${locked ? '<span class="pill sacko">LOCKED</span>' : '<span class="pill live">OPEN</span>'}
+        <span class="tag">${locked ? "games have started — picks are in" : "locks at Thursday kickoff · resubmit anytime before"}</span></h2>
+        ${submittedNote}
+        <div class="matchup-grid">${pickCards || '<p class="note">No matchups this week.</p>'}</div>
+        <div class="section-title">Power Poll — rank the league</div>
+        <div class="poll-list">${pollRows}</div>
+        ${locked ? "" : `<div class="controls" style="margin-top:16px">
+          <label>I am</label><select id="pk-who">${whoOpts}</select>
+          <input id="pk-pin" type="password" inputmode="numeric" placeholder="PIN" value="${me ? esc(me.pin) : ""}"
+            style="background:var(--surface-2);color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:7px 10px;width:80px;font-family:inherit">
+          <button class="btn on" id="pk-submit" ${pk.sending ? "disabled" : ""}>${pk.sending ? "Sending…" : "Submit picks + poll"}</button>
+          <span class="note" style="margin:0">${esc(pk.msg)}</span></div>`}
+      </div>
+      ${leader}
+      <p class="footnote">Don't know your PIN? Ask the commissioner. Picks are hidden from everyone until the week locks.</p>`;
   }
 
   /* ---------- ELO RATINGS ---------- */
@@ -1389,6 +1533,21 @@
     if (cell) { const [a, b] = cell.dataset.h2h.split("|"); openH2HLog(a, b); return; }
     const wk = e.target.closest("[data-week]");
     if (wk) { state.week = +wk.dataset.week; state.weekTouched = true; render(); return; }
+    const pick = e.target.closest("[data-pick]");
+    if (pick) { pk.sel[pick.dataset.pick] = pick.dataset.team; render(); return; }
+    const pm = e.target.closest("[data-pollmove]");
+    if (pm) {
+      const [u, dir] = pm.dataset.pollmove.split("|");
+      const i = pk.poll.indexOf(u);
+      const j = dir === "up" ? i - 1 : i + 1;
+      if (j >= 0 && j < pk.poll.length) { [pk.poll[i], pk.poll[j]] = [pk.poll[j], pk.poll[i]]; render(); }
+      return;
+    }
+    if (e.target.id === "pk-submit") {
+      const games = weekMatchups(D.currentSeason, pk.week).filter(g => g.type === "regular");
+      submitPicks(pk.week, games);
+      return;
+    }
   });
   document.addEventListener("change", e => {
     if (e.target.id === "season-pick") { state.season = e.target.value; state.weekTouched = true; state.week = 1; render(); }
