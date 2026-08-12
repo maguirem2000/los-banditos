@@ -209,6 +209,10 @@ ul.watch .wi { margin-right: 6px; }
 
 .grudge.revenge { color: var(--gold-bright); border-top: none; padding-top: 2px; }
 
+/* clickable player name -> passport */
+.pl { cursor: pointer; border-bottom: 1px dotted var(--muted); }
+.pl:hover { color: var(--blue); border-bottom-color: var(--blue); }
+
 /* championship plaque */
 .plaque {
   margin-top: 12px; border-top: 1px solid rgba(237, 161, 0, 0.3); padding-top: 10px;

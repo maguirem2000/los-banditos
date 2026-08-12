@@ -112,6 +112,8 @@
     records: { label: "Record Book", render: vRecords },
     power: { label: "Power Rankings", render: vPower },
     franchises: { label: "Franchises", render: vFranchise },
+    elo: { label: "Elo Ratings", render: vElo },
+    players: { label: "Passports", render: vPlayers },
     bench: { label: "Boneheads", render: vBench },
     trades: { label: "Trades", render: vTrades },
     awards: { label: "Awards", render: vAwards },
@@ -123,7 +125,7 @@
   const GROUPS = [
     { label: "Home", views: { home: "Home" } },
     { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds" } },
-    { label: "History", views: { records: "Record Book", h2h: "Head-to-Head", awards: "Awards" } },
+    { label: "History", views: { records: "Record Book", h2h: "Head-to-Head", elo: "Elo Ratings", awards: "Awards", players: "Passports" } },
     { label: "Teams", views: { franchises: "Franchise Pages", bench: "Boneheads" } },
     { label: "Moves", views: { trades: "Trades & Waivers", drafts: "Drafts" } },
     { label: "Trophies", views: { trophies: "Trophy Room", shame: "Shame Wall" } },
@@ -539,7 +541,7 @@
       ${(E.playerRecords ? pair(
         "Greatest Player Performances", E.playerRecords.topStarters.slice(0, 12),
         "Best Games Ever Benched", E.playerRecords.topBenched.slice(0, 10), [
-          { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b> <small style="color:var(--muted)">${esc(ppos(r.pid))}</small>` },
+          { h: "Player", f: r => `<b>${pchip(r.pid)}</b> <small style="color:var(--muted)">${esc(ppos(r.pid))}</small>` },
           { h: "Points", num: 1, f: r => `<b>${fmt(r.pts)}</b>` },
           { h: "Manager", f: r => mgrChip(r.uid) },
           { h: "When", f: gameCtx },
@@ -656,45 +658,66 @@
   }
 
   function lineChart(ps) {
-    const W = 900, H = 340, padL = 42, padR = 110, padT = 16, padB = 30;
+    const W = 900, H = 340, padL = 46, padR = 110, padT = 16, padB = 30;
     const iw = W - padL - padR, ih = H - padT - padB;
     const n = ps.weeks.length;
     const x = i => padL + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
-    const all = ps.uids.flatMap(u => ps.series[u]);
-    const mn = Math.floor(Math.min(...all) / 10) * 10, mx = Math.ceil(Math.max(...all) / 10) * 10;
+    const all = ps.uids.flatMap(u => ps.series[u]).filter(v => v != null);
+    const range = Math.max(...all) - Math.min(...all);
+    const step = range > 200 ? 50 : 10;
+    const mn = Math.floor(Math.min(...all) / step) * step, mx = Math.ceil(Math.max(...all) / step) * step;
     const y = v => padT + ih - ((v - mn) / Math.max(1, mx - mn)) * ih;
-    let out = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Power score by week">`;
-    for (let g = mn; g <= mx; g += 10) {
+    let out = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Trend chart">`;
+    for (let g = mn; g <= mx; g += step) {
       out += `<line x1="${padL}" y1="${y(g)}" x2="${W - padR}" y2="${y(g)}" stroke="var(--grid)" stroke-width="1"/>`;
       out += `<text x="${padL - 8}" y="${y(g) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${g}</text>`;
     }
+    // x labels: sparse mode labels only season changes ("2024 wk1" -> "2024")
     ps.weeks.forEach((w, i) => {
-      if (n <= 14 || i % 2 === 0) out += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${w}</text>`;
+      if (ps.sparse) {
+        const season = String(w).split(" ")[0];
+        const prev = i > 0 ? String(ps.weeks[i - 1]).split(" ")[0] : null;
+        if (season !== prev) {
+          out += `<line x1="${x(i)}" y1="${padT}" x2="${x(i)}" y2="${padT + ih}" stroke="var(--baseline)" stroke-width="1" stroke-dasharray="3 4"/>`;
+          out += `<text x="${x(i) + 4}" y="${H - 8}" font-size="11" fill="var(--muted)">${season}</text>`;
+        }
+      } else if (n <= 14 || i % 2 === 0) {
+        out += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${w}</text>`;
+      }
     });
-    // series lines + end labels (top 4 direct-labeled)
-    const ends = ps.uids.map(u => ({ u, v: ps.series[u][n - 1] })).sort((a, b) => b.v - a.v);
+    // series lines (null-safe: split segments) + end labels (top 4 direct-labeled)
+    const lastVal = u => { const s = ps.series[u]; for (let i = s.length - 1; i >= 0; i--) if (s[i] != null) return s[i]; return -1e9; };
+    const ends = ps.uids.map(u => ({ u, v: lastVal(u) })).sort((a, b) => b.v - a.v);
     const labelSet = new Set(ends.slice(0, 4).map(e => e.u));
     const usedY = [];
     ps.uids.forEach(u => {
-      const pts = ps.series[u].map((v, i) => `${x(i)},${y(v)}`).join(" ");
-      out += `<polyline points="${pts}" fill="none" stroke="${colorOf(u)}" stroke-width="2" data-line="${esc(u)}"/>`;
-      if (labelSet.has(u)) {
-        let ly = y(ps.series[u][n - 1]);
+      let seg = [];
+      const segs = [];
+      ps.series[u].forEach((v, i) => {
+        if (v == null) { if (seg.length) segs.push(seg); seg = []; }
+        else seg.push(`${x(i)},${y(v)}`);
+      });
+      if (seg.length) segs.push(seg);
+      segs.forEach(sg => {
+        out += `<polyline points="${sg.join(" ")}" fill="none" stroke="${colorOf(u)}" stroke-width="2" data-line="${esc(u)}"/>`;
+      });
+      if (labelSet.has(u) && lastVal(u) > -1e9) {
+        let ly = y(lastVal(u));
         while (usedY.some(v => Math.abs(v - ly) < 13)) ly += 13;
         usedY.push(ly);
-        out += `<text x="${W - padR + 8}" y="${ly + 4}" font-size="11.5" font-weight="600" fill="${colorOf(u)}">${esc(nameOf(u))}</text>`;
+        out += `<text x="${W - padR + 8}" y="${ly + 4}" font-size="11.5" font-weight="600" fill="${colorOf(u)}" data-line="${esc(u)}">${esc(nameOf(u))}</text>`;
       }
     });
-    out += `<rect id="chart-hit" x="${padL}" y="${padT}" width="${iw}" height="${ih}" fill="transparent"/>`;
-    out += `<line id="chart-xhair" x1="0" y1="${padT}" x2="0" y2="${padT + ih}" stroke="var(--baseline)" stroke-width="1" style="display:none"/>`;
-    out += `</svg><div class="viz-tip" id="chart-tip"></div>`;
+    out += `<rect class="chart-hit" x="${padL}" y="${padT}" width="${iw}" height="${ih}" fill="transparent"/>`;
+    out += `<line class="chart-xhair" x1="0" y1="${padT}" x2="0" y2="${padT + ih}" stroke="var(--baseline)" stroke-width="1" style="display:none"/>`;
+    out += `</svg><div class="viz-tip"></div>`;
     return out;
   }
 
-  function wirePowerChart(ps) {
-    const box = $("#power-chart"); if (!box) return;
-    const svg = $("svg", box), hit = $("#chart-hit", box), xh = $("#chart-xhair", box), tip = $("#chart-tip", box);
-    const W = 900, padL = 42, padR = 110, iw = W - padL - padR;
+  function wireChart(boxSel, ps, legendSel) {
+    const box = $(boxSel); if (!box) return;
+    const svg = $("svg", box), hit = $(".chart-hit", box), xh = $(".chart-xhair", box), tip = $(".viz-tip", box);
+    const W = 900, padL = 46, padR = 110, iw = W - padL - padR;
     const n = ps.weeks.length;
     hit.addEventListener("mousemove", e => {
       const r = svg.getBoundingClientRect();
@@ -702,8 +725,8 @@
       const i = Math.max(0, Math.min(n - 1, Math.round((px - padL) / Math.max(1, iw) * (n - 1))));
       const cx = padL + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
       xh.setAttribute("x1", cx); xh.setAttribute("x2", cx); xh.style.display = "";
-      const rows = ps.uids.map(u => ({ u, v: ps.series[u][i] })).sort((a, b) => b.v - a.v);
-      tip.innerHTML = `<div class="t">Week ${ps.weeks[i]}</div>` + rows.map(x =>
+      const rows = ps.uids.map(u => ({ u, v: ps.series[u][i] })).filter(x => x.v != null).sort((a, b) => b.v - a.v);
+      tip.innerHTML = `<div class="t">${ps.sparse ? esc(ps.weeks[i]) : "Week " + ps.weeks[i]}</div>` + rows.map(x =>
         `<div class="r"><span><span class="sw" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${colorOf(x.u)};margin-right:5px"></span>${esc(nameOf(x.u))}</span><b>${fmt(x.v, 1)}</b></div>`).join("");
       tip.style.display = "block";
       const bx = box.getBoundingClientRect();
@@ -713,13 +736,98 @@
       tip.style.top = Math.max(0, e.clientY - bx.top - 40) + "px";
     });
     hit.addEventListener("mouseleave", () => { tip.style.display = "none"; xh.style.display = "none"; });
-    const legend = $("#power-legend");
+    const legend = $(legendSel);
     legend?.addEventListener("click", e => {
       const it = e.target.closest(".item"); if (!it) return;
       it.classList.toggle("off");
-      const line = $(`[data-line="${CSS.escape(it.dataset.series)}"]`, box);
-      if (line) line.style.display = it.classList.contains("off") ? "none" : "";
+      box.querySelectorAll(`[data-line="${CSS.escape(it.dataset.series)}"]`).forEach(line =>
+        line.style.display = it.classList.contains("off") ? "none" : "");
     });
+  }
+
+  /* ---------- ELO RATINGS ---------- */
+  function vElo() {
+    const el = E.elo;
+    if (!el) return '<div class="card"><p class="note">Elo data not built yet.</p></div>';
+    const ps = { weeks: el.weeks, uids: Object.keys(el.series), series: el.series, sparse: true };
+    const maxElo = Math.max(...el.table.map(r => r.elo));
+    const minElo = Math.min(...el.table.map(r => r.elo));
+    return `
+      <div class="card"><h2>All-Time Elo Ratings <span class="tag">every game since 2023 · K=32 · playoffs included</span></h2>
+        <p class="note">Everyone starts at 1500. Beating a strong team moves you more than beating a weak one — this is the "who's actually good" number, schedule-proof.</p>
+        <div class="table-scroll"><table>
+        <tr><th></th><th>Manager</th><th class="num">Elo</th><th style="min-width:160px"></th><th class="num">Peak</th><th class="num">Peak Date</th></tr>
+        ${el.table.map((r, i) => `<tr class="me-row"><td class="rank-cell">${i + 1}</td>
+          <td>${mgrChip(r.uid)}${r.active ? "" : ' <small style="color:var(--muted)">(former)</small>'}</td>
+          <td class="num"><b style="color:${r.elo >= 1500 ? "var(--good)" : "var(--red)"}">${fmt(r.elo, 0)}</b></td>
+          <td><div class="ibar"><div class="track"><div class="fill" style="width:${((r.elo - minElo + 20) / (maxElo - minElo + 20) * 100).toFixed(1)}%;background:${colorOf(r.uid)}"></div></div></div></td>
+          <td class="num">${fmt(r.peak, 0)}</td><td class="num">${esc(r.peakWhen)}</td></tr>`).join("")}
+        </table></div></div>
+      <div class="card"><h2>Elo History <span class="tag">click a name in the legend to hide a line</span></h2>
+        <div class="chart-box" id="elo-chart">${lineChart(ps)}</div>
+        <div class="legend" id="elo-legend">${ps.uids.map(u =>
+          `<span class="item" data-series="${esc(u)}"><span class="sw" style="background:${colorOf(u)}"></span>${esc(nameOf(u))}</span>`).join("")}</div>
+      </div>`;
+  }
+
+  /* ---------- PLAYER PASSPORTS ---------- */
+  const pchip = pid => `<span class="pl" data-player="${esc(pid)}">${esc(pname(pid))}</span>`;
+
+  function vPlayers() {
+    const P = E.passports || {};
+    const q = (state.playerQuery || "").toLowerCase();
+    let rows;
+    if (q.length >= 2) {
+      rows = Object.keys(P).filter(pid => pname(pid).toLowerCase().includes(q))
+        .sort((a, b) => P[b].stints.reduce((s, x) => s + x.pts, 0) - P[a].stints.reduce((s, x) => s + x.pts, 0)).slice(0, 25);
+    } else {
+      rows = Object.keys(P).sort((a, b) => P[b].owners - P[a].owners ||
+        P[b].events.length - P[a].events.length).slice(0, 15);
+    }
+    const rowHtml = pid => {
+      const p = P[pid];
+      const pts = p.stints.reduce((s, x) => s + x.pts, 0);
+      return `<tr class="me-row"><td><b>${pchip(pid)}</b> <small style="color:var(--muted)">${esc(ppos(pid))}</small></td>
+        <td class="num">${p.owners}</td>
+        <td class="num">${p.events.filter(e => e.t === "trade").length}</td>
+        <td class="num">${fmt(pts, 1)}</td>
+        <td>${p.owner ? mgrChip(p.owner) : '<span style="color:var(--muted)">free agent</span>'}</td></tr>`;
+    };
+    return `
+      <div class="card"><h2>Player Passports <span class="tag">every player's full league history — click a name</span></h2>
+        <div class="controls"><input type="search" id="player-search" placeholder="Search any player…" value="${esc(state.playerQuery || "")}"
+          style="background:var(--surface-2);color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:14px;width:min(340px,100%);font-family:inherit"></div>
+        <div class="table-scroll"><table>
+        <tr><th>${q.length >= 2 ? "Results" : "Most Traveled"}</th><th class="num">Owners</th><th class="num">Trades</th><th class="num">Career Pts*</th><th>Current Team</th></tr>
+        ${rows.map(rowHtml).join("") || '<tr><td colspan="5" style="color:var(--muted)">No players match.</td></tr>'}
+        </table></div>
+        <p class="footnote">*points scored while in a starting lineup. Player names are clickable all over the site — records, trades, drafts — and open the same passport.</p></div>`;
+  }
+
+  function openPassport(pid) {
+    const p = (E.passports || {})[pid];
+    if (!p) return;
+    const evIcon = { draft: "🥇", trade: "🔁", add: "➕", drop: "➖" };
+    const evText = e => {
+      if (e.t === "draft") return `Drafted ${e.pick} by <b>${esc(nameOf(e.uid))}</b>`;
+      if (e.t === "trade") return `Traded to <b>${esc(nameOf(e.uid))}</b>${e.from ? ` by ${esc(nameOf(e.from))}` : ""}`;
+      if (e.t === "add") return `${e.kind === "waiver" ? `Claimed off waivers${e.bid ? ` ($${e.bid})` : ""}` : "Signed as a free agent"} by <b>${esc(nameOf(e.uid))}</b>`;
+      return `Dropped by <b>${esc(nameOf(e.uid))}</b>`;
+    };
+    const total = p.stints.reduce((s, x) => s + x.pts, 0);
+    showModal(`
+      <button class="close" data-close>×</button>
+      <h3>${esc(pname(pid))} <small style="color:var(--muted);font-weight:400">${esc(ppos(pid))}</small></h3>
+      <p class="note">${p.owner ? `Currently on ${esc(nameOf(p.owner))}'s roster` : "Currently a free agent"} · ${p.owners} franchise${p.owners === 1 ? "" : "s"} · ${fmt(total, 1)} career points started</p>
+      <div class="section-title">Journey</div>
+      <ul class="watch">${p.events.map(e =>
+        `<li><span class="wi">${evIcon[e.t]}</span> ${evText(e)} <small style="color:var(--muted)">· ${e.season}${e.week ? " wk " + e.week : " draft"}</small></li>`).join("") || '<li style="color:var(--muted)">Original startup roster — no moves recorded.</li>'}</ul>
+      <div class="section-title">Stints</div>
+      <div class="table-scroll"><table>
+      <tr><th>Team</th><th>Span</th><th class="num">Weeks</th><th class="num">Pts Started</th></tr>
+      ${p.stints.map(s => `<tr><td>${mgrChip(s.uid)}</td><td>${esc(s.from)} → ${esc(s.to)}${p.owner === s.uid && s === p.stints[p.stints.length - 1] ? " (current)" : ""}</td>
+        <td class="num">${s.weeks}</td><td class="num">${fmt(s.pts, 1)}</td></tr>`).join("")}
+      </table></div>`);
   }
 
   /* ---------- FRANCHISES ---------- */
@@ -755,7 +863,7 @@
       <div class="grid cols-2">
         <div class="card"><h2>Franchise Legends <span class="tag">points scored in this team's starting lineup, all-time</span></h2>
           ${recTable(f.legends, [
-            { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b> <small style="color:var(--muted)">${esc(ppos(r.pid))}</small>${r.active ? ' <span class="pill live">ON ROSTER</span>' : ""}` },
+            { h: "Player", f: r => `<b>${pchip(r.pid)}</b> <small style="color:var(--muted)">${esc(ppos(r.pid))}</small>${r.active ? ' <span class="pill live">ON ROSTER</span>' : ""}` },
             { h: "Points", num: 1, f: r => `<b>${fmt(r.pts, 1)}</b>` },
             { h: "Starts", num: 1, f: r => r.weeks },
           ])}</div>
@@ -768,7 +876,7 @@
           </table></div>
           <div class="section-title">Best Player-Seasons</div>
           ${recTable(f.bestSeasons, [
-            { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b>` },
+            { h: "Player", f: r => `<b>${pchip(r.pid)}</b>` },
             { h: "Season", f: r => r.season },
             { h: "Points", num: 1, f: r => `<b>${fmt(r.pts, 1)}</b>` },
           ])}</div>
@@ -776,12 +884,12 @@
       <div class="grid cols-2">
         <div class="card"><h2>Longest Tenures <span class="tag">this franchise</span></h2>
           ${recTable(f.tenure, [
-            { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b>${r.dayOne ? ' <span class="pill champ">DAY ONE</span>' : r.active ? ' <span class="pill live">ON ROSTER</span>' : ""}` },
+            { h: "Player", f: r => `<b>${pchip(r.pid)}</b>${r.dayOne ? ' <span class="pill champ">DAY ONE</span>' : r.active ? ' <span class="pill live">ON ROSTER</span>' : ""}` },
             { h: "Weeks", num: 1, f: r => `<b>${r.weeks}</b>` },
           ])}</div>
         <div class="card"><h2>League Tenure Leaders <span class="tag">all franchises</span></h2>
           ${recTable(E.tenureLeaders || [], [
-            { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b>${r.dayOne ? ' <span class="pill champ">DAY ONE</span>' : ""}` },
+            { h: "Player", f: r => `<b>${pchip(r.pid)}</b>${r.dayOne ? ' <span class="pill champ">DAY ONE</span>' : ""}` },
             { h: "With", f: r => mgrChip(r.uid) },
             { h: "Weeks", num: 1, f: r => `<b>${r.weeks}</b>` },
           ])}</div>
@@ -813,9 +921,9 @@
         ${weeks.map(w => {
           const a = wa[String(w)];
           return `<tr class="me-row"><td class="num">${w}</td>
-            <td><b>${a.topPid ? esc(pname(a.topPid)) : "—"}</b></td><td class="num">${a.topPts >= 0 ? fmt(a.topPts) : ""}</td>
+            <td><b>${a.topPid ? pchip(a.topPid) : "—"}</b></td><td class="num">${a.topPts >= 0 ? fmt(a.topPts) : ""}</td>
             <td>${a.topUid ? mgrChip(a.topUid) : ""}</td>
-            <td>${a.benchPid ? esc(pname(a.benchPid)) : "—"}</td><td class="num">${a.benchPts >= 0 ? fmt(a.benchPts) : ""}</td>
+            <td>${a.benchPid ? pchip(a.benchPid) : "—"}</td><td class="num">${a.benchPts >= 0 ? fmt(a.benchPts) : ""}</td>
             <td>${a.benchUid ? mgrChip(a.benchUid) : ""}</td></tr>`;
         }).join("")}
         </table></div></div>`;
@@ -872,7 +980,7 @@
         ${t.sides.map(s => `<div class="trade-side">
           <div class="ts-head">${mgrChip(s.uid)} <span class="ts-pts">${s.pts ? `+${fmt(s.pts, 1)} pts since` : ""}</span></div>
           <ul>
-            ${s.players.map(p => `<li>${esc(p.name)} <small>${esc(p.pos)}</small> <span class="ts-val">${fmt(p.pts, 1)}</span></li>`).join("")}
+            ${s.players.map(p => `<li>${pchip(p.pid)} <small>${esc(p.pos)}</small> <span class="ts-val">${fmt(p.pts, 1)}</span></li>`).join("")}
             ${s.picks.map(p => `<li>🎟️ ${p.season} Round ${p.round} pick <small>orig. ${esc(nameOf(p.origUid))}</small></li>`).join("")}
             ${s.faab ? `<li>💵 $${s.faab} FAAB</li>` : ""}
           </ul>
@@ -888,7 +996,7 @@
       <div class="grid cols-2">
         <div class="card"><h2>Best Pickups Ever <span class="tag">points scored while rostered after the add</span></h2>
           ${recTable((E.pickups || []).slice(0, 12), [
-            { h: "Player", f: r => `<b>${esc(r.name)}</b> <small style="color:var(--muted)">${esc(r.pos)}</small>` },
+            { h: "Player", f: r => `<b>${pchip(r.pid)}</b> <small style="color:var(--muted)">${esc(r.pos)}</small>` },
             { h: "Points", num: 1, f: r => `<b>${fmt(r.pts, 1)}</b>` },
             { h: "By", f: r => mgrChip(r.uid) },
             { h: "Cost", num: 1, f: r => r.bid ? `$${r.bid}` : "free" },
@@ -903,7 +1011,7 @@
           <div class="section-title">Biggest Bids</div>
           ${recTable((E.faab || {}).topBids || [], [
             { h: "Bid", num: 1, f: r => `<b>$${r.bid}</b>` },
-            { h: "Player", f: r => esc(pname(r.pid)) },
+            { h: "Player", f: r => pchip(r.pid) },
             { h: "By", f: r => mgrChip(r.uid) },
             { h: "When", f: r => `${r.season} wk ${r.week}` },
           ])}</div>
@@ -973,7 +1081,7 @@
       const pl = (E.plaques || {})[s];
       const plaque = pl ? `<div class="plaque">
         <div class="pl-head">TITLE LINEUP · won ${esc(pl.score)}</div>
-        ${pl.lineup.map(x => `<div class="pl-row"><span class="pl-slot">${esc(x.slot)}</span><span>${esc(pname(x.pid))}</span><span class="pl-pts">${fmt(x.pts)}</span></div>`).join("")}
+        ${pl.lineup.map(x => `<div class="pl-row"><span class="pl-slot">${esc(x.slot)}</span><span>${pchip(x.pid)}</span><span class="pl-pts">${fmt(x.pts)}</span></div>`).join("")}
       </div>` : "";
       return `<div class="banner">
         <div class="yr">${s} CHAMPION</div><div class="trophy">🏆</div>
@@ -1257,7 +1365,10 @@
     $("#app").innerHTML = VIEWS[view].render();
     if (view === "power") {
       const ps = powerSeries(state.powerSeason);
-      if (ps) wirePowerChart(ps);
+      if (ps) wireChart("#power-chart", ps, "#power-legend");
+    }
+    if (view === "elo" && E.elo) {
+      wireChart("#elo-chart", { weeks: E.elo.weeks, uids: Object.keys(E.elo.series), series: E.elo.series, sparse: true }, "#elo-legend");
     }
   }
 
@@ -1270,6 +1381,8 @@
   }
 
   document.addEventListener("click", e => {
+    const pl = e.target.closest("[data-player]");
+    if (pl) { openPassport(pl.dataset.player); return; }
     const mgr = e.target.closest("[data-mgr]");
     if (mgr && !e.target.closest(".modal")) { openManager(mgr.dataset.mgr); return; }
     const cell = e.target.closest("[data-h2h]");
@@ -1286,6 +1399,15 @@
     if (e.target.id === "awards-season") { state.awardsSeason = e.target.value; render(); }
   });
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+  document.addEventListener("input", e => {
+    if (e.target.id === "player-search") {
+      state.playerQuery = e.target.value;
+      const pos = e.target.selectionStart;
+      render();
+      const el = $("#player-search");
+      if (el) { el.focus(); el.setSelectionRange(pos, pos); }
+    }
+  });
   window.addEventListener("hashchange", nav);
 
   /* boot */

@@ -437,6 +437,117 @@ for (uid, pid), wks in rostered_wks.items():
         former_teams[pid].add(uid)
 former_out = {pid: sorted(uids) for pid, uids in former_teams.items() if len(uids) >= 1}
 
+# ---------------- Elo ratings ----------------
+# K=32, all regular-season + bracket games in chronological order, ratings carry across seasons.
+elo = defaultdict(lambda: 1500.0)
+elo_hist = {"weeks": [], "series": defaultdict(list)}
+elo_peak = {}
+all_uids_ever = set()
+for s in SEASONS:
+    sd = DATA["seasonsData"][s]
+    season_uids = {st["uid"] for st in sd["standings"]}
+    all_uids_ever |= season_uids
+    games_by_week = defaultdict(list)
+    for g in sd["regularGames"] + sd["playoffGames"]:
+        games_by_week[g["week"]].append(g)
+    for wk in sorted(games_by_week):
+        for g in games_by_week[wk]:
+            a, b = g["a"]["uid"], g["b"]["uid"]
+            if g["type"] == "regular":
+                if g["a"]["pts"] == g["b"]["pts"]:
+                    sa = 0.5
+                else:
+                    sa = 1.0 if g["a"]["pts"] > g["b"]["pts"] else 0.0
+            else:
+                sa = 1.0 if g.get("winner") == a else 0.0
+            ea = 1.0 / (1.0 + 10 ** ((elo[b] - elo[a]) / 400.0))
+            elo[a] += 32 * (sa - ea)
+            elo[b] += 32 * ((1 - sa) - (1 - ea))
+        elo_hist["weeks"].append(f"{s} wk{wk}")
+        for uid in all_uids_ever:
+            r = round(elo[uid], 1) if uid in season_uids else None
+            elo_hist["series"][uid].append(r)
+            if r is not None and (uid not in elo_peak or r > elo_peak[uid][0]):
+                elo_peak[uid] = (r, f"{s} wk{wk}")
+# pad the front of series for managers who joined later
+n_pts = len(elo_hist["weeks"])
+for uid in elo_hist["series"]:
+    ser = elo_hist["series"][uid]
+    if len(ser) < n_pts:
+        elo_hist["series"][uid] = [None] * (n_pts - len(ser)) + ser
+elo_out = {
+    "weeks": elo_hist["weeks"],
+    "series": {u: v for u, v in elo_hist["series"].items()},
+    "table": sorted([{"uid": u, "elo": round(elo[u], 1),
+                      "peak": elo_peak[u][0], "peakWhen": elo_peak[u][1],
+                      "active": CURRENT in DATA["managers"][u]["seasons"]}
+                     for u in elo_hist["series"]], key=lambda x: -x["elo"]),
+}
+
+# ---------------- player passports ----------------
+# every player's full league history: draft, trades, adds/drops, stints per owner
+pass_events = defaultdict(list)
+for s in SEASONS:
+    for d in load(f"draft_picks_{s}.json"):
+        for p in d["picks"]:
+            uid = p.get("picked_by") or r2u[s].get(p.get("roster_id"))
+            if uid:
+                pass_events[p["player_id"]].append(
+                    {"t": "draft", "season": s, "week": 0, "uid": uid,
+                     "pick": f'{p["round"]}.{p["pick_no"] - (p["round"] - 1) * 8:02d}'})
+    for t in load(f"transactions_{s}.json"):
+        if t["status"] != "complete":
+            continue
+        wk = t.get("leg") or 1
+        if t["type"] == "trade":
+            for pid, rid in (t.get("adds") or {}).items():
+                frm = (t.get("drops") or {}).get(pid)
+                pass_events[pid].append({"t": "trade", "season": s, "week": wk,
+                                         "uid": r2u[s][rid],
+                                         "from": r2u[s].get(frm) if frm else None})
+        else:
+            bid = ((t.get("settings") or {}).get("waiver_bid") or 0) if t["type"] == "waiver" else 0
+            for pid, rid in (t.get("adds") or {}).items():
+                pass_events[pid].append({"t": "add", "season": s, "week": wk,
+                                         "uid": r2u[s][rid], "bid": bid, "kind": t["type"]})
+            for pid, rid in (t.get("drops") or {}).items():
+                pass_events[pid].append({"t": "drop", "season": s, "week": wk, "uid": r2u[s][rid]})
+
+# stints: contiguous ownership runs across all weeks with data
+stints = defaultdict(list)   # pid -> [{uid, from, to, weeks, pts}]
+owner_by_week = defaultdict(list)  # pid -> [(season, week, uid)]
+for (s, w) in ALL_WEEKS:
+    rows = week_rows.get((s, w), {})
+    for rid, row in rows.items():
+        if (w, rid) not in counted[s]:
+            continue  # only weeks actually played — keeps stints/tenure honest
+        uid = r2u[s][rid]
+        starters = set(row.get("starters") or [])
+        for pid in row.get("players") or []:
+            owner_by_week[pid].append((s, w, uid,
+                (row.get("players_points") or {}).get(pid) or 0 if pid in starters else 0))
+for pid, seq in owner_by_week.items():
+    run = None
+    for (s, w, uid, pts) in seq:
+        if run and run["uid"] == uid:
+            run["to"] = f"{s} wk{w}"; run["weeks"] += 1; run["pts"] += pts
+        else:
+            if run:
+                stints[pid].append(run)
+            run = {"uid": uid, "from": f"{s} wk{w}", "to": f"{s} wk{w}", "weeks": 1, "pts": pts}
+    if run:
+        stints[pid].append(run)
+
+passports = {}
+for pid in set(list(pass_events.keys()) + list(stints.keys())):
+    evs = sorted(pass_events.get(pid, []), key=lambda e: (e["season"], e["week"]))
+    st = [{**x, "pts": round(x["pts"], 1)} for x in stints.get(pid, [])]
+    owner = next((u for u, ps in current_roster.items() if pid in ps), None)
+    if not evs and not st:
+        continue
+    passports[pid] = {"events": evs, "stints": st, "owner": owner,
+                      "owners": len({x["uid"] for x in st}) or len({e["uid"] for e in evs})}
+
 # ---------------- records watch ----------------
 watch = []
 career = DATA["career"]
@@ -481,6 +592,7 @@ for f in franchise.values():
     used.update(x["pid"] for x in f["legends"] + f["bestSeasons"] + f["tenure"])
 for pl in plaques.values():
     used.update(x["pid"] for x in pl["lineup"])
+used.update(passports.keys())
 for s in SEASONS:
     for wa in weekly_awards[s].values():
         if "topPid" in wa: used.add(wa["topPid"])
@@ -512,6 +624,8 @@ payload = {
     "superlatives": superlatives,
     "plaques": plaques,
     "formerTeams": former_out,
+    "elo": elo_out,
+    "passports": passports,
 }
 out = os.path.join(HERE, "assets", "extras.js")
 with open(out, "w") as f:
