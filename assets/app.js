@@ -119,6 +119,17 @@
     shame: { label: "Shame Wall", render: vShame },
     drafts: { label: "Drafts", render: vDrafts },
   };
+  /* nav groups: 6 top-level sections, sub-pages as pills */
+  const GROUPS = [
+    { label: "Home", views: { home: "Home" } },
+    { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds" } },
+    { label: "History", views: { records: "Record Book", h2h: "Head-to-Head", awards: "Awards" } },
+    { label: "Teams", views: { franchises: "Franchise Pages", bench: "Boneheads" } },
+    { label: "Moves", views: { trades: "Trades & Waivers", drafts: "Drafts" } },
+    { label: "Trophies", views: { trophies: "Trophy Room", shame: "Shame Wall" } },
+  ];
+  const groupOf = view => GROUPS.find(g => view in g.views) || GROUPS[0];
+
   const state = { view: "home", season: D.currentSeason, week: 1, draftSeason: D.completeSeasons[D.completeSeasons.length - 1], powerSeason: null, weekTouched: false };
 
   function gameRow(g, opts) {
@@ -233,7 +244,7 @@
         <div class="matchup-grid">${games.map(g => gameRow(g, { teamNames: true })).join("") || '<p class="note">No matchups posted yet.</p>'}</div>
       </div>
 
-      ${(E.recordsWatch || []).length ? `<div class="card"><h2>📡 Records Watch <span class="tag">storylines heading into ${esc(D.currentSeason)}</span></h2>
+      ${(E.recordsWatch || []).length ? `<div class="card"><h2>Records Watch <span class="tag">storylines heading into ${esc(D.currentSeason)}</span></h2>
         <ul class="watch">${E.recordsWatch.map(w => `<li><span class="wi">${w.icon}</span> ${esc(w.text)}</li>`).join("")}</ul></div>` : ""}
 
       <div class="card">
@@ -256,7 +267,7 @@
       const ko = new Date(E.kickoff || "2026-09-10T20:20:00-04:00");
       const days = Math.max(0, Math.ceil((ko - Date.now()) / 86400000));
       return `<div class="card countdown">
-        <h2>🏈 Kickoff Countdown</h2>
+        <h2>Kickoff Countdown</h2>
         <div class="cd-num">${days}</div>
         <div class="cd-sub">days until the ${esc(D.currentSeason)} season opener (Sept 10). Draft is done — rosters are locked and loaded.</div>
       </div>`;
@@ -284,7 +295,7 @@
     }
     const gname = g => `${nameOf(g.a.pts >= g.b.pts ? g.a.uid : g.b.uid)} over ${nameOf(g.a.pts >= g.b.pts ? g.b.uid : g.a.uid)} ${fmt(Math.max(g.a.pts, g.b.pts))}–${fmt(Math.min(g.a.pts, g.b.pts))}`;
     return `<div class="card">
-      <h2>📰 Week ${lastWk} Recap <span class="tag">auto-generated</span></h2>
+      <h2>Week ${lastWk} Recap <span class="tag">auto-generated</span></h2>
       <ul class="watch">
         <li>🔥 <b>Top score:</b> ${esc(nameOf(topTeam.uid))} with <b>${fmt(topTeam.pts)}</b></li>
         <li>😅 <b>Game of the Week:</b> ${esc(gname(closest))} (margin ${fmt(Math.abs(closest.a.pts - closest.b.pts))})</li>
@@ -361,7 +372,7 @@
       const bg = self ? "var(--surface-2)" : divergingColor((wi + li) ? wi / (wi + li) : 0.5);
       return `<td style="background:${bg}${self ? ";outline:1px solid var(--gold-bright)" : ""}">${wi}-${li}</td>`;
     };
-    return `<div class="card"><h2>🔀 Schedule What-If <span class="tag">${esc(season)} · your record with each manager's schedule</span></h2>
+    return `<div class="card"><h2>Schedule What-If <span class="tag">${esc(season)} · your record with each manager's schedule</span></h2>
       <p class="note">Row = the team, column = whose schedule they play. The gold diagonal is what actually happened.</p>
       <div class="h2h-wrap"><table class="h2h">
       <tr><th></th>${w.uids.map(u => `<th>${esc(nameOf(u))}</th>`).join("")}</tr>
@@ -464,13 +475,13 @@
       ${rows.map((r, i) => `<tr class="me-row"><td class="rank-cell">${i + 1}</td>${cols.map(c => `<td class="${c.num ? "num" : ""}">${c.f(r)}</td>`).join("")}</tr>`).join("")}
     </table></div>`;
   }
-  const gameCtx = r => `${r.season} · wk ${r.week}${r.type !== "regular" ? " · " + typeLabel(r.type).replace(/^..\s/, "") : ""}`;
+  const gameCtx = r => `${r.season} · wk ${r.week}${r.type && r.type !== "regular" ? " · " + (typeLabel(r.type) || r.type).replace(/^..\s/, "") : ""}`;
 
   function vRecords() {
     const R = D.records;
     const single = [
-      ["🔥 Highest Scores Ever", R.highScores, "pts"],
-      ["🧊 Lowest Scores Ever", R.lowScores, "pts"],
+      ["Highest Scores Ever", R.highScores, "pts"],
+      ["Lowest Scores Ever", R.lowScores, "pts"],
     ].map(([title, rows]) => `<div class="card"><h2>${title}</h2>${recTable(rows.slice(0, 10), [
       { h: "Manager", f: r => mgrChip(r.uid) },
       { h: "Points", num: 1, f: r => `<b>${fmt(r.pts)}</b>` },
@@ -518,26 +529,26 @@
     ];
 
     const streaksBlock = `<div class="grid cols-2">
-      <div class="card"><h2>♨️ Longest Win Streaks</h2>${recTable(wStreaks, streakCols("W"))}</div>
-      <div class="card"><h2>🥶 Longest Losing Streaks</h2>${recTable(lStreaks, streakCols("L"))}</div>
+      <div class="card"><h2>Longest Win Streaks</h2>${recTable(wStreaks, streakCols("W"))}</div>
+      <div class="card"><h2>Longest Losing Streaks</h2>${recTable(lStreaks, streakCols("L"))}</div>
     </div>`;
 
     return `
       <p class="note">Single-game records cover every regular-season and bracket game in league history (${D.completeSeasons[0]}–${D.completeSeasons[D.completeSeasons.length - 1]}). Consolation-week idle scores are excluded.</p>
       ${single}
       ${(E.playerRecords ? pair(
-        "🚀 Greatest Player Performances", E.playerRecords.topStarters.slice(0, 12),
-        "🛋️ Best Games Ever Benched", E.playerRecords.topBenched.slice(0, 10), [
+        "Greatest Player Performances", E.playerRecords.topStarters.slice(0, 12),
+        "Best Games Ever Benched", E.playerRecords.topBenched.slice(0, 10), [
           { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b> <small style="color:var(--muted)">${esc(ppos(r.pid))}</small>` },
           { h: "Points", num: 1, f: r => `<b>${fmt(r.pts)}</b>` },
           { h: "Manager", f: r => mgrChip(r.uid) },
           { h: "When", f: gameCtx },
         ]) : "")}
-      ${pair("💥 Biggest Blowouts", R.blowouts, "😅 Closest Calls", R.nailbiters, matchupCols)}
-      ${pair("🎇 Highest-Scoring Games", R.shootouts, "🥱 Lowest-Scoring Games", R.snoozers, matchupCols)}
-      ${pair("😤 Most Points in a Loss", R.bestLosses, "🍀 Fewest Points in a Win", R.worstWins, teamGameCols)}
-      ${pair("📈 Best Seasons (PF)", R.bestSeasonsPF, "📉 Worst Seasons (PF)", R.worstSeasonsPF, seasonCols)}
-      ${pair("🏅 Best Season Records", R.bestRecords, "🪦 Worst Season Records", R.worstRecords, seasonCols)}
+      ${pair("Biggest Blowouts", R.blowouts, "Closest Calls", R.nailbiters, matchupCols)}
+      ${pair("Highest-Scoring Games", R.shootouts, "Lowest-Scoring Games", R.snoozers, matchupCols)}
+      ${pair("Most Points in a Loss", R.bestLosses, "Fewest Points in a Win", R.worstWins, teamGameCols)}
+      ${pair("Best Seasons (PF)", R.bestSeasonsPF, "Worst Seasons (PF)", R.worstSeasonsPF, seasonCols)}
+      ${pair("Best Season Records", R.bestRecords, "Worst Season Records", R.worstRecords, seasonCols)}
       ${streaksBlock}`;
   }
 
@@ -612,7 +623,7 @@
       .sort((a, b) => b.v - a.v).map(x => x.uid);
 
     const odds = playoffOdds();
-    const oddsCard = odds ? `<div class="card"><h2>🎲 Playoff Odds <span class="tag">${esc(D.currentSeason)} · 2,000 season simulations, updated live</span></h2>
+    const oddsCard = odds ? `<div class="card"><h2>Playoff Odds <span class="tag">${esc(D.currentSeason)} · 2,000 season simulations, updated live</span></h2>
       <div class="table-scroll"><table>
       <tr><th></th><th>Manager</th><th class="num">Playoffs</th><th style="min-width:140px"></th><th class="num">Div Title</th><th class="num">Shitter Game Risk</th></tr>
       ${odds.map((o, i) => `<tr class="me-row"><td class="rank-cell">${i + 1}</td><td>${mgrChip(o.uid)}</td>
@@ -742,13 +753,13 @@
           ${c && c.champs.length ? " · " + "🏆".repeat(c.champs.length) + " " + c.champs.join(", ") : ""}</p>
         </div></div>
       <div class="grid cols-2">
-        <div class="card"><h2>🐐 Franchise Legends <span class="tag">points scored in this team's starting lineup, all-time</span></h2>
+        <div class="card"><h2>Franchise Legends <span class="tag">points scored in this team's starting lineup, all-time</span></h2>
           ${recTable(f.legends, [
             { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b> <small style="color:var(--muted)">${esc(ppos(r.pid))}</small>${r.active ? ' <span class="pill live">ON ROSTER</span>' : ""}` },
             { h: "Points", num: 1, f: r => `<b>${fmt(r.pts, 1)}</b>` },
             { h: "Starts", num: 1, f: r => r.weeks },
           ])}</div>
-        <div class="card"><h2>📊 Positional Report Card <span class="tag">career started points · rank of ${active.length}</span></h2>
+        <div class="card"><h2>Positional Report Card <span class="tag">career started points · rank of ${active.length}</span></h2>
           <div class="table-scroll"><table>
           ${posOrder.map(p => `<tr class="me-row"><td style="width:44px"><b>${p}</b></td>
             <td><div class="ibar"><div class="track"><div class="fill" style="width:${(((f.pos || {})[p] || 0) / maxPos * 100).toFixed(1)}%;background:${posRank[p] === 1 ? "var(--gold-bright)" : posRank[p] >= active.length - 1 ? "var(--red)" : colorOf(uid)}"></div></div>
@@ -763,12 +774,12 @@
           ])}</div>
       </div><div style="height:18px"></div>
       <div class="grid cols-2">
-        <div class="card"><h2>⏳ Longest Tenures <span class="tag">this franchise</span></h2>
+        <div class="card"><h2>Longest Tenures <span class="tag">this franchise</span></h2>
           ${recTable(f.tenure, [
             { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b>${r.dayOne ? ' <span class="pill champ">DAY ONE</span>' : r.active ? ' <span class="pill live">ON ROSTER</span>' : ""}` },
             { h: "Weeks", num: 1, f: r => `<b>${r.weeks}</b>` },
           ])}</div>
-        <div class="card"><h2>🏛️ League Tenure Leaders <span class="tag">all franchises</span></h2>
+        <div class="card"><h2>League Tenure Leaders <span class="tag">all franchises</span></h2>
           ${recTable(E.tenureLeaders || [], [
             { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b>${r.dayOne ? ' <span class="pill champ">DAY ONE</span>' : ""}` },
             { h: "With", f: r => mgrChip(r.uid) },
@@ -785,7 +796,7 @@
     const wa = (E.weeklyAwards || {})[sel] || {};
     const weeks = Object.keys(wa).map(Number).sort((a, b) => a - b);
     return `
-      <div class="card"><h2>🏅 League Superlatives <span class="tag">computed from every game ever played</span></h2>
+      <div class="card"><h2>League Superlatives <span class="tag">computed from every game ever played</span></h2>
         <div class="banner-row" style="margin-top:12px">
         ${(E.superlatives || []).map(s => `<div class="banner superlative">
           <div class="trophy">${s.icon}</div>
@@ -794,7 +805,7 @@
           <div class="team"><b>${esc(s.value)}</b> — ${esc(s.desc)}</div>
         </div>`).join("")}
         </div></div>
-      <div class="card"><h2>📆 Weekly Awards Archive</h2>
+      <div class="card"><h2>Weekly Awards Archive</h2>
         <div class="controls"><label>Season</label>
           <select id="awards-season">${seasons.map(s => `<option value="${s}" ${s === sel ? "selected" : ""}>${s}</option>`).join("")}</select></div>
         <div class="table-scroll"><table>
@@ -817,7 +828,7 @@
     const rows = Object.entries(L.career).sort((a, b) => b[1].eff - a[1].eff);
     const whenF = r => `${r.season} · wk ${r.week}`;
     return `
-      <div class="card"><h2>🧠 Career Lineup Efficiency <span class="tag">actual points ÷ best possible lineup, every game ever</span></h2>
+      <div class="card"><h2>Career Lineup Efficiency <span class="tag">actual points ÷ best possible lineup, every game ever</span></h2>
         <div class="table-scroll"><table>
         <tr><th></th><th>Manager</th><th class="num">Efficiency</th><th style="min-width:150px"></th><th class="num">Left on Bench</th><th class="num">Losses w/ Winning Bench</th></tr>
         ${rows.map(([uid, c], i) => `<tr class="me-row"><td class="rank-cell">${i + 1}</td>
@@ -829,14 +840,14 @@
         </table></div>
         <p class="note" style="margin-top:8px">“Losses w/ Winning Bench” = games lost where the optimal lineup would have beaten the opponent's actual score.</p></div>
       <div class="grid cols-2">
-        <div class="card"><h2>🤡 Worst Start/Sit Weeks Ever</h2>${recTable(L.worstBenchings, [
+        <div class="card"><h2>Worst Start/Sit Weeks Ever</h2>${recTable(L.worstBenchings, [
           { h: "Manager", f: r => mgrChip(r.uid) },
           { h: "Scored", num: 1, f: r => fmt(r.act) },
           { h: "Could Have", num: 1, f: r => fmt(r.opt) },
           { h: "Missed", num: 1, f: r => `<b style="color:var(--red)">${fmt(r.missed)}</b>` },
           { h: "When", f: whenF },
         ])}</div>
-        <div class="card"><h2>💀 Games Thrown Away <span class="tag">lost, but the bench had the win</span></h2>${recTable(L.lostByBench, [
+        <div class="card"><h2>Games Thrown Away <span class="tag">lost, but the bench had the win</span></h2>${recTable(L.lostByBench, [
           { h: "Manager", f: r => mgrChip(r.uid) },
           { h: "Lost", num: 1, f: r => `${fmt(r.act)}–${fmt(r.oppPts)}` },
           { h: "vs", f: r => esc(nameOf(r.opp)) },
@@ -875,7 +886,7 @@
 
     return `
       <div class="grid cols-2">
-        <div class="card"><h2>🛒 Best Pickups Ever <span class="tag">points scored while rostered after the add</span></h2>
+        <div class="card"><h2>Best Pickups Ever <span class="tag">points scored while rostered after the add</span></h2>
           ${recTable((E.pickups || []).slice(0, 12), [
             { h: "Player", f: r => `<b>${esc(r.name)}</b> <small style="color:var(--muted)">${esc(r.pos)}</small>` },
             { h: "Points", num: 1, f: r => `<b>${fmt(r.pts, 1)}</b>` },
@@ -883,7 +894,7 @@
             { h: "Cost", num: 1, f: r => r.bid ? `$${r.bid}` : "free" },
             { h: "When", f: r => `${r.season} wk ${r.week}` },
           ])}</div>
-        <div class="card"><h2>💵 FAAB Ledger <span class="tag">$${(E.faab || {}).budget || 100} budget</span></h2>
+        <div class="card"><h2>FAAB Ledger <span class="tag">$${(E.faab || {}).budget || 100} budget</span></h2>
           ${recTable(faabRows.slice(0, 10), [
             { h: "Manager", f: r => mgrChip(r.uid) },
             { h: "Season", f: r => r.season },
@@ -899,7 +910,7 @@
       </div>
       <div style="height:18px"></div>
       <div class="card">
-        <h2>🔁 Trade Log <span class="tag">${trades.length} trades all-time · “pts since” = points scored for the new team after the deal</span></h2>
+        <h2>Trade Log <span class="tag">${trades.length} trades all-time · “pts since” = points scored for the new team after the deal</span></h2>
         <div class="controls"><label>Season</label>
           <select id="trade-season"><option value="all" ${filt === "all" ? "selected" : ""}>All</option>
           ${seasons.map(s => `<option value="${s}" ${s === filt ? "selected" : ""}>${s}</option>`).join("")}</select></div>
@@ -1069,21 +1080,21 @@
       .sort((a, b) => D.career[b].sackos.length - D.career[a].sackos.length);
     return `<div class="banner-row">${banners}</div><div style="height:18px"></div>
       <div class="grid cols-2">
-        <div class="card"><h2>💩 Shitter Count</h2><div class="table-scroll"><table>
+        <div class="card"><h2>Shitter Count</h2><div class="table-scroll"><table>
           <tr><th>Manager</th><th class="num">Shitters</th><th class="num">Years</th></tr>
           ${sackoCount.map(u => `<tr class="me-row"><td>${mgrChip(u)}</td><td class="num">${"💩".repeat(D.career[u].sackos.length)}</td><td class="num">${D.career[u].sackos.join(", ")}</td></tr>`).join("")}
         </table></div></div>
-        <div class="card"><h2>🥶 Longest Losing Streaks</h2>${recTable(lStreaks, [
+        <div class="card"><h2>Longest Losing Streaks</h2>${recTable(lStreaks, [
           { h: "Manager", f: r => mgrChip(r.uid) },
           { h: "L in a row", num: 1, f: r => `<b style="color:var(--red)">${r.maxL}</b>` },
           { h: "Span", f: r => r.maxLspan ? `${r.maxLspan[0][0]} wk ${r.maxLspan[0][1]} → ${r.maxLspan[1][0]} wk ${r.maxLspan[1][1]}` : "—" },
         ])}</div>
       </div><div style="height:18px"></div>
       <div class="grid cols-2">
-        <div class="card"><h2>🧊 Worst Single Weeks</h2>${recTable(R.lowScores.slice(0, 10), lowCols)}</div>
-        <div class="card"><h2>🚑 Worst Blowout Losses</h2>${recTable(R.blowouts, blowCols)}</div>
+        <div class="card"><h2>Worst Single Weeks</h2>${recTable(R.lowScores.slice(0, 10), lowCols)}</div>
+        <div class="card"><h2>Worst Blowout Losses</h2>${recTable(R.blowouts, blowCols)}</div>
       </div><div style="height:18px"></div>
-      <div class="card"><h2>🪦 Worst Seasons</h2>${recTable(R.worstRecords, seasonCols)}</div>`;
+      <div class="card"><h2>Worst Seasons</h2>${recTable(R.worstRecords, seasonCols)}</div>`;
   }
 
   /* ---------- DRAFTS ---------- */
@@ -1113,7 +1124,7 @@
     }).join("");
 
     const ledger = (E.pickLedger?.[season] || []).filter(r => r.origUid && r.toUid && r.origUid !== r.toUid);
-    const ledgerHtml = ledger.length ? `<div class="card"><h2>🎟️ Traded Pick Ledger <span class="tag">future pick ownership as of the ${season} league</span></h2>
+    const ledgerHtml = ledger.length ? `<div class="card"><h2>Traded Pick Ledger <span class="tag">future pick ownership as of the ${season} league</span></h2>
       <div class="table-scroll"><table>
       <tr><th>Pick</th><th>Original Owner</th><th>Now Owned By</th><th>Acquired From</th></tr>
       ${ledger.sort((a, b) => a.pickSeason.localeCompare(b.pickSeason) || a.round - b.round).map(r =>
@@ -1145,8 +1156,8 @@
       { h: kind, num: 1, f: p => `<b style="color:${p.delta > 0 ? "var(--good)" : "var(--red)"}">${p.delta > 0 ? "+" : ""}${p.delta}</b>` },
     ];
     return `<div class="grid cols-2">
-      <div class="card"><h2>💎 Biggest Steals</h2><p class="note">Outproduced their draft slot the most (pick # minus production rank).</p>${recTable(steals, cols("Steal"))}</div>
-      <div class="card"><h2>🗑️ Biggest Busts</h2><p class="note">Early picks that fell furthest short.</p>${recTable(busts, cols("Bust"))}</div>
+      <div class="card"><h2>Biggest Steals</h2><p class="note">Outproduced their draft slot the most (pick # minus production rank).</p>${recTable(steals, cols("Steal"))}</div>
+      <div class="card"><h2>Biggest Busts</h2><p class="note">Early picks that fell furthest short.</p>${recTable(busts, cols("Bust"))}</div>
     </div><div style="height:18px"></div>`;
   }
 
@@ -1230,8 +1241,19 @@
   /* ---------- router / render ---------- */
   function render() {
     const view = VIEWS[state.view] ? state.view : "home";
+    const group = groupOf(view);
     document.querySelectorAll("nav.tabs a").forEach(a =>
-      a.classList.toggle("active", a.dataset.view === view));
+      a.classList.toggle("active", a.dataset.group === group.label));
+    const sub = $("#subnav");
+    const subViews = Object.entries(group.views);
+    if (subViews.length > 1) {
+      sub.innerHTML = subViews.map(([k, label]) =>
+        `<a href="#/${k}" class="${k === view ? "on" : ""}">${label}</a>`).join("");
+      sub.style.display = "";
+    } else {
+      sub.innerHTML = "";
+      sub.style.display = "none";
+    }
     $("#app").innerHTML = VIEWS[view].render();
     if (view === "power") {
       const ps = powerSeries(state.powerSeason);
@@ -1268,8 +1290,8 @@
 
   /* boot */
   const tabs = $("nav.tabs");
-  tabs.innerHTML = Object.entries(VIEWS).map(([k, v]) =>
-    `<a href="#/${k}" data-view="${k}">${v.label}</a>`).join("");
+  tabs.innerHTML = GROUPS.map(g =>
+    `<a href="#/${Object.keys(g.views)[0]}" data-group="${g.label}">${g.label}</a>`).join("");
   $("#league-sub").textContent =
     `Dynasty · ${D.seasons.length} seasons · est. ${D.seasons[0]} · updated ${D.generatedAt}`;
   nav();
