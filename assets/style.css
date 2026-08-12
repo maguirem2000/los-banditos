@@ -209,6 +209,16 @@ ul.watch .wi { margin-right: 6px; }
 
 .grudge.revenge { color: var(--gold-bright); border-top: none; padding-top: 2px; }
 
+/* vegas odds */
+.grudge.odds { color: var(--gold-bright); border-top: 1px dashed var(--grid); font-variant-numeric: tabular-nums; }
+.pk-team .ml-chip {
+  margin-left: auto; font-size: 11.5px; font-variant-numeric: tabular-nums;
+  color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px;
+}
+.pk-team .ml-chip.fav { color: var(--gold-bright); border-color: rgba(237, 161, 0, 0.4); }
+.pk-team.on .ml-chip { margin-left: 8px; }
+.pk-team.on::after { margin-left: auto; }
+
 /* pick'em */
 .pk-game { display: flex; flex-direction: column; gap: 8px; }
 .pk-team {

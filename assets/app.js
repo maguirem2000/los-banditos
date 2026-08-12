@@ -135,6 +135,77 @@
 
   const state = { view: "home", season: D.currentSeason, week: 1, draftSeason: D.completeSeasons[D.completeSeasons.length - 1], powerSeason: null, weekTouched: false };
 
+  /* ---------- vegas odds ---------- */
+  let _profiles = null;
+  function scoringProfile(uid) {
+    if (!_profiles) {
+      _profiles = {};
+      const byUid = {};
+      D.completeSeasons.forEach(s => {
+        D.seasonsData[s].regularGames.forEach(g => {
+          [["a"], ["b"]].forEach(([side]) => {
+            const t = g[side];
+            (byUid[t.uid] = byUid[t.uid] || []).push({ pts: t.pts, season: s });
+          });
+        });
+      });
+      Object.entries(byUid).forEach(([uid2, rows]) => {
+        const last = D.completeSeasons[D.completeSeasons.length - 1];
+        const all = rows.map(r => r.pts);
+        const recent = rows.filter(r => r.season === last).map(r => r.pts);
+        const mean = arr => arr.reduce((s, x) => s + x, 0) / arr.length;
+        const m = recent.length >= 6 ? 0.65 * mean(recent) + 0.35 * mean(all) : mean(all);
+        const mu = mean(all);
+        const sd = Math.sqrt(all.reduce((s, x) => s + (x - mu) ** 2, 0) / Math.max(1, all.length - 1));
+        _profiles[uid2] = { mean: m, sd: Math.max(16, sd) };
+      });
+    }
+    return _profiles[uid] || { mean: 130, sd: 25 };
+  }
+  const normCdf = z => 0.5 * (1 + Math.tanh(Math.sqrt(Math.PI / 8) * z * (1 + 0.044715 * z * z / 3)));
+  function toML(p) {
+    const q = Math.min(0.97, Math.max(0.03, p + 0.02)); // a little house juice
+    const ml = q >= 0.5 ? -Math.round(100 * q / (1 - q) / 5) * 5 : Math.round(100 * (1 - q) / q / 5) * 5;
+    return ml > 0 ? "+" + ml : String(ml);
+  }
+  function matchupOdds(g, projWeek) {
+    // current-season blend: live scores shrunk toward prior, projections override when present
+    const est = uid => {
+      const prof = scoringProfile(uid);
+      let mean = prof.mean, n = 0;
+      if (LIVE.loaded) {
+        const scores = [];
+        for (let w = 1; w < D.currentLeague.playoffWeekStart; w++) {
+          weekMatchups(D.currentSeason, w).forEach(x => {
+            if (!x.played) return;
+            if (x.a.uid === uid) scores.push(x.a.pts);
+            if (x.b.uid === uid) scores.push(x.b.pts);
+          });
+        }
+        n = scores.length;
+        if (n) mean = (scores.reduce((s, x) => s + x, 0) + prof.mean * 5) / (n + 5);
+      }
+      const proj = projWeek ? projectedPts(projWeek, uid) : null;
+      if (proj != null) mean = 0.6 * proj + 0.4 * mean;
+      return { mean, sd: prof.sd };
+    };
+    const A = est(g.a.uid), B = est(g.b.uid);
+    const pA = normCdf((A.mean - B.mean) / Math.sqrt(A.sd ** 2 + B.sd ** 2));
+    const fav = pA >= 0.5 ? g.a.uid : g.b.uid;
+    const spread = Math.round(Math.abs(A.mean - B.mean) * 2) / 2;
+    return {
+      fav, pA,
+      spread: Math.max(0.5, spread),
+      total: Math.round((A.mean + B.mean) * 2) / 2,
+      mlA: toML(pA), mlB: toML(1 - pA),
+    };
+  }
+  function oddsLine(g, projWeek) {
+    if (g.played || g.season !== D.currentSeason) return "";
+    const o = matchupOdds(g, projWeek);
+    return `<div class="grudge odds">🎰 ${esc(nameOf(o.fav))} −${o.spread} · ML ${o.fav === g.a.uid ? o.mlA : o.mlB} / ${o.fav === g.a.uid ? o.mlB : o.mlA} · O/U ${fmt(o.total, 1)}</div>`;
+  }
+
   function gameRow(g, opts) {
     const o = opts || {};
     const played = g.played !== false;
@@ -155,7 +226,7 @@
     };
     const lbl = typeLabel(g.type);
     let grudge = "";
-    if (!played) grudge = grudgeLine(g.a.uid, g.b.uid);
+    if (!played) grudge = oddsLine(g, o.proj) + grudgeLine(g.a.uid, g.b.uid);
     return `<div class="matchup">
       ${side(g.a, aWin, played && bWin)}
       ${side(g.b, bWin, played && aWin)}
@@ -218,6 +289,7 @@
     const wk = LIVE.loaded ? LIVE.week : 1;
     const games = weekMatchups(D.currentSeason, wk);
     const anyPlayed = games.some(g => g.played);
+    if (LIVE.loaded && games.some(g => !g.played)) fetchProjections(wk);
 
     const careerRows = Object.keys(c)
       .sort((a, b) => (c[b].w / Math.max(1, c[b].w + c[b].l)) - (c[a].w / Math.max(1, c[a].w + c[a].l)))
@@ -244,7 +316,7 @@
 
       <div class="card">
         <h2>Week ${wk} · ${esc(D.currentSeason)} ${LIVE.loaded ? '<span class="pill live">LIVE</span>' : ""}<span class="tag">${anyPlayed ? "" : "season hasn’t kicked off — matchups set"}</span></h2>
-        <div class="matchup-grid">${games.map(g => gameRow(g, { teamNames: true })).join("") || '<p class="note">No matchups posted yet.</p>'}</div>
+        <div class="matchup-grid">${games.map(g => gameRow(g, { teamNames: true, proj: wk })).join("") || '<p class="note">No matchups posted yet.</p>'}</div>
       </div>
 
       ${(E.recordsWatch || []).length ? `<div class="card"><h2>Records Watch <span class="tag">storylines heading into ${esc(D.currentSeason)}</span></h2>
@@ -803,10 +875,15 @@
     const me = myIdentity();
     const locked = pk.subs && pk.subs.locked;
 
+    if (games.some(g => !g.played)) fetchProjections(week);
     const pickCards = games.map(g => {
       const k = gameKey(g);
-      const btn = t => `<button class="pk-team ${pk.sel[k] === t.uid ? "on" : ""}" data-pick="${esc(k)}" data-team="${esc(t.uid)}" ${locked ? "disabled" : ""}>
-        ${avatarHtml(t.uid, 20)} ${esc(nameOf(t.uid))}</button>`;
+      const odds = !g.played ? matchupOdds(g, week) : null;
+      const btn = t => {
+        const ml = odds ? (t.uid === g.a.uid ? odds.mlA : odds.mlB) : "";
+        return `<button class="pk-team ${pk.sel[k] === t.uid ? "on" : ""}" data-pick="${esc(k)}" data-team="${esc(t.uid)}" ${locked ? "disabled" : ""}>
+        ${avatarHtml(t.uid, 20)} ${esc(nameOf(t.uid))}${ml ? `<span class="ml-chip ${ml.startsWith("-") ? "fav" : ""}">${ml}</span>` : ""}</button>`;
+      };
       let crowd = "";
       if (locked && pk.subs.subs?.length) {
         const votes = pk.subs.subs.filter(s => s.picks && s.picks[k]);
