@@ -64,4 +64,34 @@ for lg in chain:
             all_picks.append({"draft": d, "picks": picks})
     save(f"draft_picks_{season}.json", all_picks)
 
+# 3. transactions + traded picks (for trade/FAAB analytics)
+for lg in chain:
+    lid, season = lg["league_id"], lg["season"]
+    txns = []
+    for wk in range(1, 19):
+        t = get(f"/league/{lid}/transactions/{wk}")
+        if t:
+            txns.extend(t)
+    save(f"transactions_{season}.json", txns)
+    save(f"traded_picks_{season}.json", get(f"/league/{lid}/traded_picks"))
+
+# 4. player database (names/positions) — big file, gitignored, needed by build_extras.py
+players = get("/players/nfl")
+save("players_nfl.json", players)
+
+# 5. per-season PPR totals for drafted players (draft steal/bust analysis)
+pids = set()
+for lg in chain:
+    for d in json.load(open(os.path.join(OUT, f"draft_picks_{lg['season']}.json"))):
+        for p in d["picks"]:
+            pids.add(p["player_id"])
+slim = {}
+for lg in chain:
+    season = lg["season"]
+    stats = get(f"/stats/nfl/regular/{season}") or {}
+    slim[season] = {pid: {"pts": round((stats.get(pid) or {}).get("pts_ppr") or 0, 1),
+                          "gp": (stats.get(pid) or {}).get("gp") or 0}
+                    for pid in pids if pid in stats}
+save("player_season_pts.json", slim)
+
 print("Done. Seasons:", [lg["season"] for lg in chain])

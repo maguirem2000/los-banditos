@@ -111,8 +111,10 @@
     h2h: { label: "Head-to-Head", render: vH2H },
     records: { label: "Record Book", render: vRecords },
     power: { label: "Power Rankings", render: vPower },
+    franchises: { label: "Franchises", render: vFranchise },
     bench: { label: "Boneheads", render: vBench },
     trades: { label: "Trades", render: vTrades },
+    awards: { label: "Awards", render: vAwards },
     trophies: { label: "Trophy Room", render: vTrophies },
     shame: { label: "Shame Wall", render: vShame },
     drafts: { label: "Drafts", render: vDrafts },
@@ -171,7 +173,25 @@
       }
       if (n >= 2) extra += ` · ${nameOf(who)} has won ${n} straight`;
     }
-    return `<div class="grudge">🥊 ${esc(series)}${esc(extra)}</div>`;
+    return `<div class="grudge">🥊 ${esc(series)}${esc(extra)}</div>${revengeLine(a, b)}`;
+  }
+
+  /* players facing a manager who used to roster them */
+  function revengeLine(a, b) {
+    if (!LIVE.loaded || !E.formerTeams) return "";
+    const bits = [];
+    for (const [me, them] of [[a, b], [b, a]]) {
+      const roster = LIVE.rosters.find(r => r.owner_id === me);
+      if (!roster) continue;
+      const rid = roster.roster_id;
+      const wk = LIVE.week || 1;
+      const row = (LIVE.matchups[wk] || []).find(r => r.roster_id === rid);
+      const pids = (row && row.players && row.players.length ? row.players : roster.players) || [];
+      const revs = pids.filter(pid => (E.formerTeams[pid] || []).includes(them) && E.playerNames && E.playerNames[pid]);
+      if (revs.length) bits.push(`${pname(revs[0])} faces his old ${esc(nameOf(them))} squad`);
+      if (bits.length >= 2) break;
+    }
+    return bits.length ? `<div class="grudge revenge">🔥 Revenge: ${bits.join(" · ")}</div>` : "";
   }
 
   /* ---------- HOME ---------- */
@@ -328,7 +348,25 @@
     } else {
       body = tableFor(rows, "League");
     }
-    return seasonPicker() + body + luckCard(season);
+    return seasonPicker() + body + whatIfCard(season) + luckCard(season);
+  }
+
+  function whatIfCard(season) {
+    const w = (E.whatIf || {})[season];
+    if (!w) return season === D.currentSeason
+      ? "" : "";
+    const cell = (a, b) => {
+      const [wi, li] = w.grid[a][b];
+      const self = a === b;
+      const bg = self ? "var(--surface-2)" : divergingColor((wi + li) ? wi / (wi + li) : 0.5);
+      return `<td style="background:${bg}${self ? ";outline:1px solid var(--gold-bright)" : ""}">${wi}-${li}</td>`;
+    };
+    return `<div class="card"><h2>🔀 Schedule What-If <span class="tag">${esc(season)} · your record with each manager's schedule</span></h2>
+      <p class="note">Row = the team, column = whose schedule they play. The gold diagonal is what actually happened.</p>
+      <div class="h2h-wrap"><table class="h2h">
+      <tr><th></th>${w.uids.map(u => `<th>${esc(nameOf(u))}</th>`).join("")}</tr>
+      ${w.uids.map(a => `<tr><th>${mgrChip(a)}</th>${w.uids.map(b => cell(a, b)).join("")}</tr>`).join("")}
+      </table></div></div>`;
   }
 
   function luckCard(season) {
@@ -673,6 +711,105 @@
     });
   }
 
+  /* ---------- FRANCHISES ---------- */
+  function vFranchise() {
+    const active = Object.keys(D.career).filter(u => (E.franchise || {})[u])
+      .sort((a, b) => (seatOf[a] || 9) - (seatOf[b] || 9) || nameOf(a).localeCompare(nameOf(b)));
+    if (!state.franchiseUid || !active.includes(state.franchiseUid)) {
+      state.franchiseUid = active.find(u => D.managers[u].seasons.includes(D.currentSeason)) || active[0];
+    }
+    const uid = state.franchiseUid;
+    const f = E.franchise[uid];
+    const posOrder = ["QB", "RB", "WR", "TE", "K", "DEF"];
+    const posRank = {};
+    posOrder.forEach(p => {
+      const vals = active.map(u => (E.franchise[u].pos || {})[p] || 0).sort((x, y) => y - x);
+      posRank[p] = vals.indexOf((f.pos || {})[p] || 0) + 1;
+    });
+    const maxPos = Math.max(...posOrder.map(p => (f.pos || {})[p] || 0), 1);
+    const c = D.career[uid];
+    const gp = c ? c.w + c.l + c.t : 0;
+
+    return `
+      <div class="controls"><label>Franchise</label>
+        <select id="franchise-pick">${active.map(u =>
+          `<option value="${esc(u)}" ${u === uid ? "selected" : ""}>${esc(nameOf(u))}</option>`).join("")}</select></div>
+      <div class="card" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        ${avatarHtml(uid, 56)}
+        <div>
+          <h2 style="margin:0">${esc(teamOf(uid, D.currentSeason))}</h2>
+          <p class="note" style="margin:2px 0 0">${esc(nameOf(uid))} · ${c ? `${c.w}-${c.l} all-time` : ""} · ${gp ? fmt(c.pf / gp) : "—"} PPG
+          ${c && c.champs.length ? " · " + "🏆".repeat(c.champs.length) + " " + c.champs.join(", ") : ""}</p>
+        </div></div>
+      <div class="grid cols-2">
+        <div class="card"><h2>🐐 Franchise Legends <span class="tag">points scored in this team's starting lineup, all-time</span></h2>
+          ${recTable(f.legends, [
+            { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b> <small style="color:var(--muted)">${esc(ppos(r.pid))}</small>${r.active ? ' <span class="pill live">ON ROSTER</span>' : ""}` },
+            { h: "Points", num: 1, f: r => `<b>${fmt(r.pts, 1)}</b>` },
+            { h: "Starts", num: 1, f: r => r.weeks },
+          ])}</div>
+        <div class="card"><h2>📊 Positional Report Card <span class="tag">career started points · rank of ${active.length}</span></h2>
+          <div class="table-scroll"><table>
+          ${posOrder.map(p => `<tr class="me-row"><td style="width:44px"><b>${p}</b></td>
+            <td><div class="ibar"><div class="track"><div class="fill" style="width:${(((f.pos || {})[p] || 0) / maxPos * 100).toFixed(1)}%;background:${posRank[p] === 1 ? "var(--gold-bright)" : posRank[p] >= active.length - 1 ? "var(--red)" : colorOf(uid)}"></div></div>
+            <span class="val">${fmt((f.pos || {})[p] || 0, 0)}</span></div></td>
+            <td class="num" style="width:70px;color:${posRank[p] === 1 ? "var(--gold-bright)" : posRank[p] >= active.length - 1 ? "var(--red)" : "var(--muted)"}">${posRank[p] === 1 ? "👑 1st" : ordinal(posRank[p])}</td></tr>`).join("")}
+          </table></div>
+          <div class="section-title">Best Player-Seasons</div>
+          ${recTable(f.bestSeasons, [
+            { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b>` },
+            { h: "Season", f: r => r.season },
+            { h: "Points", num: 1, f: r => `<b>${fmt(r.pts, 1)}</b>` },
+          ])}</div>
+      </div><div style="height:18px"></div>
+      <div class="grid cols-2">
+        <div class="card"><h2>⏳ Longest Tenures <span class="tag">this franchise</span></h2>
+          ${recTable(f.tenure, [
+            { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b>${r.dayOne ? ' <span class="pill champ">DAY ONE</span>' : r.active ? ' <span class="pill live">ON ROSTER</span>' : ""}` },
+            { h: "Weeks", num: 1, f: r => `<b>${r.weeks}</b>` },
+          ])}</div>
+        <div class="card"><h2>🏛️ League Tenure Leaders <span class="tag">all franchises</span></h2>
+          ${recTable(E.tenureLeaders || [], [
+            { h: "Player", f: r => `<b>${esc(pname(r.pid))}</b>${r.dayOne ? ' <span class="pill champ">DAY ONE</span>' : ""}` },
+            { h: "With", f: r => mgrChip(r.uid) },
+            { h: "Weeks", num: 1, f: r => `<b>${r.weeks}</b>` },
+          ])}</div>
+      </div>
+      <p class="footnote">“Day One” = drafted in the 2023 startup and still on the same roster today.</p>`;
+  }
+
+  /* ---------- AWARDS ---------- */
+  function vAwards() {
+    const seasons = D.seasons.filter(s => Object.keys((E.weeklyAwards || {})[s] || {}).length);
+    const sel = state.awardsSeason && seasons.includes(state.awardsSeason) ? state.awardsSeason : seasons[seasons.length - 1];
+    const wa = (E.weeklyAwards || {})[sel] || {};
+    const weeks = Object.keys(wa).map(Number).sort((a, b) => a - b);
+    return `
+      <div class="card"><h2>🏅 League Superlatives <span class="tag">computed from every game ever played</span></h2>
+        <div class="banner-row" style="margin-top:12px">
+        ${(E.superlatives || []).map(s => `<div class="banner superlative">
+          <div class="trophy">${s.icon}</div>
+          <div class="yr">${esc(s.title)}</div>
+          <div class="who">${mgrChip(s.uid, { size: 22 })}</div>
+          <div class="team"><b>${esc(s.value)}</b> — ${esc(s.desc)}</div>
+        </div>`).join("")}
+        </div></div>
+      <div class="card"><h2>📆 Weekly Awards Archive</h2>
+        <div class="controls"><label>Season</label>
+          <select id="awards-season">${seasons.map(s => `<option value="${s}" ${s === sel ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+        <div class="table-scroll"><table>
+        <tr><th class="num">Wk</th><th>⭐ Player of the Week</th><th class="num">Pts</th><th></th><th>🤡 Bench Blunder</th><th class="num">Pts</th><th></th></tr>
+        ${weeks.map(w => {
+          const a = wa[String(w)];
+          return `<tr class="me-row"><td class="num">${w}</td>
+            <td><b>${a.topPid ? esc(pname(a.topPid)) : "—"}</b></td><td class="num">${a.topPts >= 0 ? fmt(a.topPts) : ""}</td>
+            <td>${a.topUid ? mgrChip(a.topUid) : ""}</td>
+            <td>${a.benchPid ? esc(pname(a.benchPid)) : "—"}</td><td class="num">${a.benchPts >= 0 ? fmt(a.benchPts) : ""}</td>
+            <td>${a.benchUid ? mgrChip(a.benchUid) : ""}</td></tr>`;
+        }).join("")}
+        </table></div></div>`;
+  }
+
   /* ---------- BONEHEADS (lineup efficiency) ---------- */
   function vBench() {
     const L = E.lineup;
@@ -822,12 +959,43 @@
   function vTrophies() {
     const banners = D.completeSeasons.slice().reverse().map(s => {
       const sd = D.seasonsData[s];
+      const pl = (E.plaques || {})[s];
+      const plaque = pl ? `<div class="plaque">
+        <div class="pl-head">TITLE LINEUP · won ${esc(pl.score)}</div>
+        ${pl.lineup.map(x => `<div class="pl-row"><span class="pl-slot">${esc(x.slot)}</span><span>${esc(pname(x.pid))}</span><span class="pl-pts">${fmt(x.pts)}</span></div>`).join("")}
+      </div>` : "";
       return `<div class="banner">
         <div class="yr">${s} CHAMPION</div><div class="trophy">🏆</div>
         <div class="who">${mgrChip(sd.champion, { size: 22 })}</div>
         <div class="team">${esc(teamOf(sd.champion, s))}</div>
         <div class="team" style="margin-top:6px;color:var(--muted)">runner-up: ${esc(nameOf(sd.runnerUp))}</div>
+        ${plaque}
       </div>`;
+    }).join("");
+
+    const brackets = D.completeSeasons.slice().reverse().map(s => {
+      const pg = D.seasonsData[s].playoffGames;
+      const game = g => {
+        if (!g) return "";
+        const win = g.winner;
+        const row = t => `<div class="bg-row ${t.uid === win ? "bg-win" : ""}"><span>${esc(nameOf(t.uid))}</span><span>${fmt(t.pts)}</span></div>`;
+        return `<div class="bgame">${row(g.a)}${row(g.b)}</div>`;
+      };
+      const r1 = pg.filter(g => g.type === "playoff" && g.round === 1);
+      const semis = pg.filter(g => g.type === "playoff" && g.round === 2);
+      const title = pg.find(g => g.type === "championship");
+      const third = pg.find(g => g.type === "place-3");
+      const fifth = pg.find(g => g.type === "place-5");
+      const sacko = pg.find(g => g.type === "sacko");
+      return `<div class="card"><h2>${s} Playoff Bracket</h2>
+        <div class="bracket">
+          <div class="bcol"><div class="bcol-t">Round 1</div>${r1.map(game).join("")}</div>
+          <div class="bcol"><div class="bcol-t">Semifinals</div>${semis.map(game).join("")}</div>
+          <div class="bcol"><div class="bcol-t">Championship 🏆</div>${game(title)}
+            <div class="bcol-t" style="margin-top:14px">3rd Place</div>${game(third)}</div>
+          <div class="bcol"><div class="bcol-t">5th Place</div>${game(fifth)}
+            <div class="bcol-t" style="margin-top:14px">Shitter Bowl 💩</div>${game(sacko)}</div>
+        </div></div>`;
     }).join("");
 
     const rows = Object.keys(D.career)
@@ -862,7 +1030,8 @@
       <div class="table-scroll"><table>
         <tr><th>Manager</th><th class="num">Titles</th><th class="num">Runner-Up</th><th class="num">Playoff Apps</th><th class="num">Playoff W-L</th><th class="num">Best Finish</th></tr>
         ${rows}</table></div></div>
-      <div class="card"><h2>Season Finishes</h2>${finishGrid}</div>`;
+      <div class="card"><h2>Season Finishes</h2>${finishGrid}</div>
+      ${brackets}`;
   }
 
   /* ---------- SHAME WALL ---------- */
@@ -1091,6 +1260,8 @@
     if (e.target.id === "draft-season") { state.draftSeason = e.target.value; render(); }
     if (e.target.id === "power-season") { state.powerSeason = e.target.value; render(); }
     if (e.target.id === "trade-season") { state.tradeSeason = e.target.value; render(); }
+    if (e.target.id === "franchise-pick") { state.franchiseUid = e.target.value; render(); }
+    if (e.target.id === "awards-season") { state.awardsSeason = e.target.value; render(); }
   });
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
   window.addEventListener("hashchange", nav);

@@ -194,6 +194,35 @@ ul.watch .wi { margin-right: 6px; }
 .trade-side .ts-val { color: var(--ink); font-variant-numeric: tabular-nums; }
 .matchup.trade .meta { flex-basis: 100%; display: flex; align-items: center; gap: 10px; }
 
+.grudge.revenge { color: var(--gold-bright); border-top: none; padding-top: 2px; }
+
+/* championship plaque */
+.plaque {
+  margin-top: 12px; border-top: 1px solid rgba(237, 161, 0, 0.3); padding-top: 10px;
+  text-align: left; font-size: 12px;
+}
+.plaque .pl-head { color: var(--gold-bright); font-size: 10px; letter-spacing: 1px; font-weight: 700; margin-bottom: 6px; text-align: center; }
+.plaque .pl-row { display: flex; gap: 8px; padding: 2px 0; color: var(--ink-2); }
+.plaque .pl-slot { color: var(--muted); width: 38px; flex: none; font-size: 10.5px; text-transform: uppercase; padding-top: 1px; }
+.plaque .pl-row span:nth-child(2) { flex: 1; }
+.plaque .pl-pts { font-variant-numeric: tabular-nums; color: var(--ink); }
+
+/* superlative banners */
+.banner.superlative {
+  background: linear-gradient(180deg, rgba(57, 135, 229, 0.10), rgba(57, 135, 229, 0.02));
+  border-color: rgba(57, 135, 229, 0.3);
+}
+.banner.superlative .yr { color: var(--blue); }
+
+/* playoff bracket */
+.bracket { display: flex; gap: 18px; overflow-x: auto; padding-bottom: 6px; }
+.bcol { flex: 1; min-width: 190px; display: flex; flex-direction: column; gap: 10px; justify-content: flex-start; }
+.bcol-t { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; }
+.bgame { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; }
+.bgame .bg-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bgame .bg-row.bg-win { color: var(--ink); font-weight: 700; }
+.bgame .bg-row.bg-win span:last-child { color: var(--good); }
+
 /* trophy shelf */
 .banner-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
 .banner {

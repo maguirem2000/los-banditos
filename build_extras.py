@@ -131,6 +131,89 @@ for uid, c in lineup_career.items():
                        "weeks": c["weeks"],
                        "lostByBench": sum(1 for e in lost_by_bench if e["uid"] == uid)}
 
+# ---------------- franchise legends / tenure / positional ----------------
+started_pts = defaultdict(float)      # (uid, pid) -> started points
+started_wks = defaultdict(int)
+rostered_wks = defaultdict(int)       # (uid, pid) -> weeks on roster
+season_started = defaultdict(float)   # (uid, pid, season) -> started points
+pos_pts = defaultdict(lambda: defaultdict(float))  # uid -> pos -> started points
+
+for s in SEASONS:
+    for (wk, rid) in counted[s]:
+        row = week_rows.get((s, wk), {}).get(rid)
+        if not row:
+            continue
+        uid = r2u[s][rid]
+        starters = set(row.get("starters") or [])
+        for pid in row.get("players") or []:
+            rostered_wks[(uid, pid)] += 1
+            if pid in starters:
+                pts = (row.get("players_points") or {}).get(pid) or 0
+                started_pts[(uid, pid)] += pts
+                started_wks[(uid, pid)] += 1
+                season_started[(uid, pid, s)] += pts
+                pos_pts[uid][pos_of(pid)] += pts
+
+current_roster = {}   # uid -> set of pids on the 2026 roster
+for r in rosters[CURRENT]:
+    current_roster[r["owner_id"]] = set(r.get("players") or [])
+startup_drafted = {}  # pid -> uid who drafted them in the 2023 startup
+for d in load("draft_picks_2023.json"):
+    for p in d["picks"]:
+        uid = r2u["2023"].get(p.get("roster_id"))
+        if uid:
+            startup_drafted[p["player_id"]] = uid
+
+franchise = {}
+for uid in {u for (u, _p) in rostered_wks}:
+    legends = sorted(((pid, v) for (u, pid), v in started_pts.items() if u == uid),
+                     key=lambda x: -x[1])[:8]
+    best_seasons = sorted((((pid, se), v) for (u, pid, se), v in season_started.items() if u == uid),
+                          key=lambda x: -x[1])[:5]
+    tenure = sorted(((pid, v) for (u, pid), v in rostered_wks.items() if u == uid),
+                    key=lambda x: -x[1])[:8]
+    franchise[uid] = {
+        "legends": [{"pid": pid, "pts": round(v, 1), "weeks": started_wks[(uid, pid)],
+                     "active": pid in current_roster.get(uid, set())} for pid, v in legends],
+        "bestSeasons": [{"pid": pid, "season": se, "pts": round(v, 1)} for (pid, se), v in best_seasons],
+        "tenure": [{"pid": pid, "weeks": v, "active": pid in current_roster.get(uid, set()),
+                    "dayOne": startup_drafted.get(pid) == uid and pid in current_roster.get(uid, set())}
+                   for pid, v in tenure],
+        "pos": {p: round(v, 1) for p, v in pos_pts[uid].items()},
+    }
+# league-wide tenure leaders
+tenure_leaders = sorted(rostered_wks.items(), key=lambda kv: -kv[1])[:12]
+tenure_out = [{"uid": u, "pid": pid, "weeks": v, "active": pid in current_roster.get(u, set()),
+               "dayOne": startup_drafted.get(pid) == u and pid in current_roster.get(u, set())}
+              for (u, pid), v in tenure_leaders]
+
+# ---------------- what-if schedule grid (per complete season) ----------------
+what_if = {}
+for s in COMPLETE:
+    score = defaultdict(dict)  # week -> uid -> pts
+    sched = defaultdict(dict)  # uid -> week -> opponent uid
+    for g in DATA["seasonsData"][s]["regularGames"]:
+        score[g["week"]][g["a"]["uid"]] = g["a"]["pts"]
+        score[g["week"]][g["b"]["uid"]] = g["b"]["pts"]
+        sched[g["a"]["uid"]][g["week"]] = g["b"]["uid"]
+        sched[g["b"]["uid"]][g["week"]] = g["a"]["uid"]
+    uids = sorted(sched.keys(), key=lambda u: u2r[s].get(u, 9))
+    grid = {}
+    for a in uids:
+        grid[a] = {}
+        for b in uids:
+            w = l = 0
+            for wk, opp in sched[b].items():
+                if wk not in score or a not in score[wk]:
+                    continue
+                opp_score = score[wk][b] if opp == a else score[wk].get(opp)
+                if opp_score is None:
+                    continue
+                if score[wk][a] > opp_score: w += 1
+                elif score[wk][a] < opp_score: l += 1
+            grid[a][b] = [w, l]
+    what_if[s] = {"uids": uids, "grid": grid}
+
 # ---------------- roster membership by week (for pts-since calculations) ----------------
 # member[(uid)][(season, week)] = set(pids)  — built lazily from week_rows
 SEASON_ORDER = {s: i for i, s in enumerate(SEASONS)}
@@ -258,6 +341,102 @@ for s in SEASONS:
             if orig_uid and drafter and orig_uid != drafter:
                 draft_via.setdefault(s, {})[str(p["pick_no"])] = orig_uid
 
+# ---------------- superlatives ----------------
+def _career_games(uid):
+    out = []
+    for s in COMPLETE:
+        for g in DATA["seasonsData"][s]["regularGames"]:
+            for side, other in (("a", "b"), ("b", "a")):
+                if g[side]["uid"] == uid:
+                    out.append((g[side]["pts"], g[other]["pts"]))
+    return out
+
+active_uids = [u for u in DATA["career"] if CURRENT in DATA["managers"][u]["seasons"]]
+superlatives = []
+def crown(icon, title, uid, value, desc):
+    superlatives.append({"icon": icon, "title": title, "uid": uid, "value": value, "desc": desc})
+
+faab_total = defaultdict(int)
+for s, m in faab_season.items():
+    for uid, amt in m.items():
+        faab_total[uid] += amt
+if faab_total:
+    u = max(faab_total, key=faab_total.get)
+    crown("🎰", "The Gambler", u, f"${faab_total[u]}", "most FAAB torched all-time")
+
+eligible = {u: c for u, c in lineup_career.items() if c["weeks"] >= 20}
+if eligible:
+    u = min(eligible, key=lambda x: eligible[x]["act"] / eligible[x]["opt"])
+    crown("😴", "The Sleepwalker", u, f"{eligible[u]['act'] / eligible[u]['opt'] * 100:.1f}%",
+          "worst lineup efficiency (min 20 games)")
+
+stats_by_uid = {}
+for u in active_uids:
+    gs = _career_games(u)
+    if len(gs) < 14: continue
+    losses = [p for p, o in gs if p < o]
+    mean = sum(p for p, _ in gs) / len(gs)
+    sd = (sum((p - mean) ** 2 for p, _ in gs) / (len(gs) - 1)) ** 0.5
+    stats_by_uid[u] = {
+        "lossPPG": sum(losses) / len(losses) if losses else 0, "sd": sd,
+        "closeW": sum(1 for p, o in gs if 0 < p - o < 5),
+        "closeL": sum(1 for p, o in gs if 0 < o - p < 5),
+    }
+if stats_by_uid:
+    u = max(stats_by_uid, key=lambda x: stats_by_uid[x]["lossPPG"])
+    crown("💔", "Glass Cannon", u, f"{stats_by_uid[u]['lossPPG']:.1f} PPG", "highest scoring average in losses")
+    u = max(stats_by_uid, key=lambda x: stats_by_uid[x]["sd"])
+    crown("🎢", "Boom or Bust", u, f"±{stats_by_uid[u]['sd']:.1f}", "wildest week-to-week scoring swings")
+    u = min(stats_by_uid, key=lambda x: stats_by_uid[x]["sd"])
+    crown("🎯", "The Metronome", u, f"±{stats_by_uid[u]['sd']:.1f}", "most consistent scorer")
+    u = max(stats_by_uid, key=lambda x: stats_by_uid[x]["closeW"])
+    crown("🗡️", "The Assassin", u, f"{stats_by_uid[u]['closeW']} wins", "most wins by fewer than 5 points")
+    u = max(stats_by_uid, key=lambda x: stats_by_uid[x]["closeL"])
+    crown("🪦", "Heartbreak Kid", u, f"{stats_by_uid[u]['closeL']} losses", "most losses by fewer than 5 points")
+
+pickup_total = defaultdict(float)
+for p in pickups:
+    pickup_total[p["uid"]] += p["pts"]
+if pickup_total:
+    u = max(pickup_total, key=pickup_total.get)
+    crown("🦅", "The Vulture", u, f"{pickup_total[u]:.0f} pts", "most points scavenged off waivers & free agency")
+
+div_pct = {}
+for s, dd in div_out.items():
+    for uid, r in dd["records"].items():
+        agg = div_pct.setdefault(uid, [0, 0])
+        agg[0] += r["divW"]; agg[1] += r["divL"]
+if div_pct:
+    u = max(div_pct, key=lambda x: div_pct[x][0] / max(1, div_pct[x][0] + div_pct[x][1]))
+    crown("🏘️", "The Bully", u, f"{div_pct[u][0]}-{div_pct[u][1]}", "best divisional record all-time")
+
+# ---------------- championship plaques ----------------
+plaques = {}
+for s in COMPLETE:
+    sd = DATA["seasonsData"][s]
+    champ = sd["champion"]
+    title_game = next((g for g in sd["playoffGames"] if g["type"] == "championship"), None)
+    if not champ or not title_game:
+        continue
+    rid = u2r[s][champ]
+    row = week_rows.get((s, title_game["week"]), {}).get(rid)
+    if not row:
+        continue
+    plaques[s] = {"uid": champ,
+                  "score": f'{title_game["a"]["pts"]}–{title_game["b"]["pts"]}' if title_game["a"]["uid"] == champ
+                           else f'{title_game["b"]["pts"]}–{title_game["a"]["pts"]}',
+                  "opp": title_game["b"]["uid"] if title_game["a"]["uid"] == champ else title_game["a"]["uid"],
+                  "lineup": [{"pid": pid, "slot": SLOTS[i] if i < len(SLOTS) else "?",
+                              "pts": round((row.get("players_points") or {}).get(pid) or 0, 2)}
+                             for i, pid in enumerate(row.get("starters") or [])]}
+
+# ---------------- revenge-game map ----------------
+former_teams = defaultdict(set)
+for (uid, pid), wks in rostered_wks.items():
+    if wks >= 2:
+        former_teams[pid].add(uid)
+former_out = {pid: sorted(uids) for pid, uids in former_teams.items() if len(uids) >= 1}
+
 # ---------------- records watch ----------------
 watch = []
 career = DATA["career"]
@@ -298,6 +477,10 @@ watch.append({"icon": "📜", "text": f"All-time records to beat: {DATA['records
 used = set()
 for lst in (top_starters, top_benched):
     used.update(x["pid"] for x in lst)
+for f in franchise.values():
+    used.update(x["pid"] for x in f["legends"] + f["bestSeasons"] + f["tenure"])
+for pl in plaques.values():
+    used.update(x["pid"] for x in pl["lineup"])
 for s in SEASONS:
     for wa in weekly_awards[s].values():
         if "topPid" in wa: used.add(wa["topPid"])
@@ -323,6 +506,12 @@ payload = {
     "draftVia": draft_via,
     "recordsWatch": watch,
     "kickoff": "2026-09-10T20:20:00-04:00",
+    "franchise": franchise,
+    "tenureLeaders": tenure_out,
+    "whatIf": what_if,
+    "superlatives": superlatives,
+    "plaques": plaques,
+    "formerTeams": former_out,
 }
 out = os.path.join(HERE, "assets", "extras.js")
 with open(out, "w") as f:
