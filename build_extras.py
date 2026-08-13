@@ -5,13 +5,15 @@ import json, os
 from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RAW = os.path.join(HERE, "data", "raw")
+RAW = os.environ.get("RAW_DIR") or os.path.join(HERE, "data", "raw")
+DATA_IN = os.environ.get("DATA_OUT") or os.path.join(HERE, "assets", "data.js")
+EXTRAS_OUT = os.environ.get("EXTRAS_OUT") or os.path.join(HERE, "assets", "extras.js")
 
 def load(name):
     with open(os.path.join(RAW, name)) as f:
         return json.load(f)
 
-DATA = json.loads(open(os.path.join(HERE, "assets", "data.js")).read()
+DATA = json.loads(open(DATA_IN).read()
                   .replace("window.LEAGUE_DATA = ", "").rstrip(";\n"))
 SEASONS = DATA["seasons"]
 COMPLETE = DATA["completeSeasons"]
@@ -157,10 +159,11 @@ for s in SEASONS:
 current_roster = {}   # uid -> set of pids on the 2026 roster
 for r in rosters[CURRENT]:
     current_roster[r["owner_id"]] = set(r.get("players") or [])
-startup_drafted = {}  # pid -> uid who drafted them in the 2023 startup
-for d in load("draft_picks_2023.json"):
+STARTUP = SEASONS[0]  # the league's first season = startup draft year
+startup_drafted = {}  # pid -> uid who drafted them in the startup
+for d in load(f"draft_picks_{STARTUP}.json"):
     for p in d["picks"]:
-        uid = r2u["2023"].get(p.get("roster_id"))
+        uid = r2u[STARTUP].get(p.get("roster_id"))
         if uid:
             startup_drafted[p["player_id"]] = uid
 
@@ -581,8 +584,9 @@ for u in active:
     if st and st["n"] >= 4:
         kind = "win" if st["kind"] == "W" else "losing"
         watch.append({"icon": "♨️" if st["kind"] == "W" else "🥶", "text": f"{names[u]} carries a {st['n']}-game {kind} streak into {CURRENT}"})
-rec_streak = max(DATA["streaks"].items(), key=lambda kv: kv[1]["maxL"])
-watch.append({"icon": "📜", "text": f"All-time records to beat: {DATA['records']['highScores'][0]['pts']} pts in a week ({names[DATA['records']['highScores'][0]['uid']]}), {rec_streak[1]['maxL']}-game skid ({names[rec_streak[0]]})"})
+if DATA["streaks"] and DATA["records"]["highScores"]:
+    rec_streak = max(DATA["streaks"].items(), key=lambda kv: kv[1]["maxL"])
+    watch.append({"icon": "📜", "text": f"All-time records to beat: {DATA['records']['highScores'][0]['pts']} pts in a week ({names[DATA['records']['highScores'][0]['uid']]}), {rec_streak[1]['maxL']}-game skid ({names[rec_streak[0]]})"})
 
 # ---------------- player name map (only ids referenced anywhere) ----------------
 used = set()
@@ -627,7 +631,7 @@ payload = {
     "elo": elo_out,
     "passports": passports,
 }
-out = os.path.join(HERE, "assets", "extras.js")
+out = EXTRAS_OUT
 with open(out, "w") as f:
     f.write("window.LEAGUE_EXTRAS = ")
     json.dump(payload, f)

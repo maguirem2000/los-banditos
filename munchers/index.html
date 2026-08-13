@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coochie Munchers — League Hub</title>
+  <meta name="description" content="Coochie Munchers dynasty fantasy football: live standings, odds, trade market, hot takes, and polls.">
+  <meta property="og:title" content="Coochie Munchers — League Hub">
+  <meta property="og:description" content="Live standings, playoff odds, trade finder, hot takes, and weekly polls. Year one — every record set this season stands forever.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://munchers.lbffl.com/">
+  <meta property="og:image" content="https://munchers.lbffl.com/assets/icon-512.png">
+  <meta name="twitter:card" content="summary">
+  <link rel="icon" href="assets/icon-192.png">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0d0d0d">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <header class="site">
+    <div class="masthead">
+      <img class="logo" src="assets/icon-192.png" alt="Coochie Munchers">
+      <div>
+        <h1>Coochie <span>Munchers</span></h1>
+        <div class="sub" id="league-sub">Dynasty league hub</div>
+      </div>
+    </div>
+    <nav class="tabs"></nav>
+    <div class="subnav" id="subnav" style="display:none"></div>
+  </header>
+  <main id="app"></main>
+  <script src="assets/config.js"></script>
+  <script src="assets/data.js"></script>
+  <script src="assets/extras.js"></script>
+  <script src="assets/app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator && location.protocol === "https:") {
+      navigator.serviceWorker.register("sw.js");
+    }
+  </script>
+</body>
+</html>

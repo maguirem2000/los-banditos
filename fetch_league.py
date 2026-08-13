@@ -3,8 +3,9 @@
 import json, os, sys, urllib.request
 
 BASE = "https://api.sleeper.app/v1"
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw")
-START_LEAGUE = "1315162051303194624"
+OUT = os.environ.get("RAW_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw")
+START_LEAGUE = os.environ.get("LEAGUE_ID", "1315162051303194624")
+os.makedirs(OUT, exist_ok=True)
 
 def get(path):
     url = f"{BASE}{path}"

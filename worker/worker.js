@@ -27,6 +27,7 @@ import { buildPushPayload } from "@block65/webcrypto-web-push";
  */
 
 const ALLOWED_ORIGINS = ["https://lbffl.com", "https://www.lbffl.com",
+  "https://munchers.lbffl.com", "https://munchers-league.pages.dev",
   "http://localhost:8642", "http://127.0.0.1:8642",
   "http://localhost:8123", "http://127.0.0.1:8123"];
 
@@ -146,7 +147,7 @@ async function runCron(env, cron) {
       await pushTo(env, uid, {
         title: "🌶️ Hot Take Wednesday",
         body: `Week ${wk} takes and Who-Ya-Rather polls are open — the league is waiting on yours.`,
-        url: "https://lbffl.com/#/takes",
+        url: `${env.SITE_URL || "https://lbffl.com"}/#/takes`,
       });
     }
   }
@@ -160,7 +161,7 @@ async function runCron(env, cron) {
       await pushTo(env, uid, {
         title: "🏈 Pick'em locks tonight",
         body: `Week ${wk} picks lock at kickoff and yours aren't in yet.`,
-        url: "https://lbffl.com/#/picks",
+        url: `${env.SITE_URL || "https://lbffl.com"}/#/picks`,
       });
     }
   }
@@ -346,7 +347,7 @@ export default {
         const sent = await pushTo(env, b.uid, {
           title: "🔔 Notifications are on",
           body: "You'll get the Wednesday hot-take nudge and Thursday pick'em alerts right here.",
-          url: "https://lbffl.com/",
+          url: (env.SITE_URL || "https://lbffl.com") + "/",
         });
         return new Response(JSON.stringify({ ok: true, sent }), { headers });
       }

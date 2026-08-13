@@ -1,0 +1,17 @@
+name = "munchers-picks"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+[vars]
+LEAGUE_ID = "1307248583203901440"
+SITE_URL = "https://munchers.lbffl.com"
+VAPID_SUBJECT = "mailto:maguirettu@gmail.com"
+VAPID_PUBLIC_KEY = "BNuvGGc7igXPBD3jWmH5tKSZQwLFLSDMCFvkF7Mj_xJAZoiXkwD-jjcpX5yaNAtrOmKvnRIAhkW85_8CHePRnrs"
+
+[[kv_namespaces]]
+binding = "PICKS"
+id = "ce8616157f29493295d0d8488426e3e7"
+
+# Wed 6pm CT hot-take reminder · Thu 4pm CT pick'em reminder
+[triggers]
+crons = ["0 23 * * 3", "0 21 * * 4"]

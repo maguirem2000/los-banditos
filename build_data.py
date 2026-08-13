@@ -4,8 +4,8 @@ Re-run any time after refreshing data/raw (see fetch in README)."""
 import json, os
 from collections import defaultdict
 
-RAW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw")
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "data.js")
+RAW = os.environ.get("RAW_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw")
+OUT = os.environ.get("DATA_OUT") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "data.js")
 
 def load(name):
     with open(os.path.join(RAW, name)) as f:
@@ -341,6 +341,8 @@ payload = {
     "seasons": SEASONS, "completeSeasons": COMPLETE, "currentSeason": CURRENT,
     "currentLeague": {"leagueId": chain[-1]["league_id"],
                       "playoffWeekStart": chain[-1]["settings"]["playoff_week_start"],
+                      "playoffTeams": chain[-1]["settings"].get("playoff_teams", 6),
+                      "totalRosters": chain[-1].get("total_rosters", 8),
                       "divisions": {"1": (chain[-1].get("metadata") or {}).get("division_1"),
                                     "2": (chain[-1].get("metadata") or {}).get("division_2")}},
     "managers": managers,
