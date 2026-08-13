@@ -65,6 +65,7 @@
       if (GD_SIM) { LIVE.seasonActive = true; simScores(LIVE.week); }
       render(); // refresh whatever view is open with live numbers
       maybeTakePrompt();
+      ensureWyrPairs(); // all three loaders race; whichever finishes last seeds the week's poll
     } catch (e) {
       LIVE.failed = true;
       console.warn("Live Sleeper fetch failed; using baked data", e);
