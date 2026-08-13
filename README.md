@@ -21,7 +21,7 @@ A full stats website for the Los Banditos dynasty fantasy football league (Sleep
 
 - **Pick'em & Poll** (Season tab) — weekly winner picks and a rank-the-league power poll, submitted right on the site with per-manager PINs. Locks at Thursday kickoff; crowd percentages and a season leaderboard after lock. Backend: Cloudflare Worker + KV in `worker/` (deploy with `npx wrangler deploy`; PINs live in the `PINS` secret).
 
-Plus, live on the current season: **playoff odds** (Monte Carlo simulation on the Power Rankings tab), **matchup projections** on the schedule, **grudge-match previews** (all-time series + streaks on every upcoming matchup), an auto-generated **weekly recap**, **revenge-game flags**, a **records watch**, a **schedule what-if grid**, and a preseason **kickoff countdown**. The site is an installable PWA — "Add to Home Screen" on your phone.
+Plus, live on the current season: **gameday mode** (during NFL game windows the scoreboard auto-refreshes every 60s, with a live win-probability bar on every matchup — banked points + remaining projections, uncertainty shrinking as games burn down — plus swing badges when a matchup flips; preview anytime with `?gdsim` for simulated scores), **playoff odds** (Monte Carlo simulation on the Power Rankings tab), **matchup projections** on the schedule, **grudge-match previews** (all-time series + streaks on every upcoming matchup), an auto-generated **weekly recap**, **revenge-game flags**, a **records watch**, a **schedule what-if grid**, and a preseason **kickoff countdown**. The site is an installable PWA — "Add to Home Screen" on your phone.
 
 ## How data works
 

@@ -62,6 +62,7 @@
       LIVE.seasonActive = state.season === D.currentSeason && state.season_type === "regular";
       LIVE.week = LIVE.seasonActive ? Math.max(1, Math.min(17, state.week || 1)) : 1;
       LIVE.loaded = true;
+      if (GD_SIM) { LIVE.seasonActive = true; simScores(LIVE.week); }
       render(); // refresh whatever view is open with live numbers
     } catch (e) {
       LIVE.failed = true;
@@ -207,6 +208,85 @@
     return `<div class="grudge odds">🎰 ${esc(nameOf(o.fav))} −${o.spread} · ML ${o.fav === g.a.uid ? o.mlA : o.mlB} / ${o.fav === g.a.uid ? o.mlB : o.mlA} · O/U ${fmt(o.total, 1)}</div>`;
   }
 
+  /* ---------- gameday live mode ---------- */
+  const GD_SIM = /[?&]gdsim/.test(location.search); // dev preview: fabricates in-progress scores client-side
+  const GD = { last: null, prev: {} };
+
+  function gamedayActive() {
+    if (GD_SIM) return true;
+    if (!LIVE.loaded || !LIVE.seasonActive) return false;
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", hour12: false }).formatToParts(new Date());
+    const wd = parts.find(p => p.type === "weekday").value, hr = +parts.find(p => p.type === "hour").value;
+    return (wd === "Thu" && hr >= 19) || (wd === "Sun" && hr >= 12) || (wd === "Mon" && hr >= 19) || (wd === "Sat" && hr >= 12);
+  }
+
+  function simScores(wk) {
+    (LIVE.matchups[wk] || []).forEach(row => {
+      const pp = {}; let tot = 0;
+      (row.starters || []).forEach(pid => {
+        const base = (projCache[wk] && projCache[wk][pid]) || 10;
+        const v = Math.round(base * Math.random() * (0.4 + Math.random() * 1.4) * 10) / 10;
+        pp[pid] = v; tot += v;
+      });
+      row.players_points = pp; row.points = Math.round(tot * 100) / 100;
+    });
+  }
+
+  let gdRefreshing = false;
+  async function refreshLive() {
+    if (gdRefreshing || !LIVE.loaded || !gamedayActive() || document.hidden) return;
+    gdRefreshing = true;
+    try {
+      const wk = LIVE.week || 1;
+      const rows = await fetch(`https://api.sleeper.app/v1/league/${D.currentLeague.leagueId}/matchups/${wk}`).then(r => r.json());
+      LIVE.matchups[wk] = rows || [];
+      if (GD_SIM) simScores(wk);
+      GD.last = new Date();
+      if (["home", "schedule", "picks"].includes(state.view)) render();
+    } catch (e) { /* transient network blip — next tick retries */ }
+    gdRefreshing = false;
+  }
+  setInterval(refreshLive, 60000);
+
+  /* live win probability: actual points banked + remaining projection, uncertainty shrinks as games burn down */
+  function liveWinProb(g) {
+    if (!LIVE.loaded || g.season !== D.currentSeason || g.week !== LIVE.week) return null;
+    if (!gamedayActive() && !g.played) return null;
+    const map = projCache[g.week];
+    if (!map) { fetchProjections(g.week); return null; }
+    const est = uid => {
+      const rid = LIVE.rosters.find(r => r.owner_id === uid)?.roster_id;
+      const row = (LIVE.matchups[g.week] || []).find(r => r.roster_id === rid);
+      if (!row || !(row.starters || []).length) return null;
+      let act = 0, rem = 0, projTot = 0;
+      row.starters.forEach(pid => {
+        const a = (row.players_points || {})[pid] || 0, pr = map[pid] || 0;
+        act += a; projTot += pr; rem += Math.max(0, pr - a);
+      });
+      const prof = scoringProfile(uid);
+      return { exp: act + rem, sd: Math.max(4, prof.sd * (projTot > 0 ? Math.sqrt(rem / projTot) : 1)) };
+    };
+    const A = est(g.a.uid), B = est(g.b.uid);
+    if (!A || !B) return null;
+    return { pA: normCdf((A.exp - B.exp) / Math.sqrt(A.sd * A.sd + B.sd * B.sd)), expA: A.exp, expB: B.exp };
+  }
+
+  function wpLine(g) {
+    const wp = liveWinProb(g);
+    if (!wp) return "";
+    const k = [g.a.uid, g.b.uid].sort().join("|");
+    const prev = GD.prev[k];
+    let swing = "";
+    if (prev != null && Math.abs(wp.pA - prev) >= 0.03) {
+      const towardA = wp.pA > prev;
+      const who = towardA ? g.a.uid : g.b.uid;
+      swing = ` · <b style="color:${colorOf(who)}">${esc(nameOf(who))} ▲${Math.round(Math.abs(wp.pA - prev) * 100)}</b>`;
+    }
+    if (prev == null || Math.abs(wp.pA - prev) >= 0.005) GD.prev[k] = wp.pA;
+    return `<div class="wp"><div class="wp-bar"><div class="wp-a" style="width:${(wp.pA * 100).toFixed(1)}%;background:${colorOf(g.a.uid)}"></div><div class="wp-b" style="background:${colorOf(g.b.uid)}"></div></div>
+      <div class="wp-lbl">${esc(nameOf(g.a.uid))} <b>${Math.round(wp.pA * 100)}%</b> · <b>${Math.round((1 - wp.pA) * 100)}%</b> ${esc(nameOf(g.b.uid))}${swing} <small>proj final ${fmt(wp.expA, 0)}–${fmt(wp.expB, 0)}</small></div></div>`;
+  }
+
   function gameRow(g, opts) {
     const o = opts || {};
     const played = g.played !== false;
@@ -232,6 +312,7 @@
       ${side(g.a, aWin, played && bWin)}
       ${side(g.b, bWin, played && aWin)}
       <div class="meta">${esc(g.season)} · Week ${g.week}${lbl ? " · " + lbl : ""}${played ? "" : " · upcoming"}</div>
+      ${wpLine(g)}
       ${grudge}
     </div>`;
   }
@@ -290,7 +371,7 @@
     const wk = LIVE.loaded ? LIVE.week : 1;
     const games = weekMatchups(D.currentSeason, wk);
     const anyPlayed = games.some(g => g.played);
-    if (LIVE.loaded && games.some(g => !g.played)) fetchProjections(wk);
+    if (LIVE.loaded && (games.some(g => !g.played) || gamedayActive())) fetchProjections(wk);
 
     const careerRows = Object.keys(c)
       .sort((a, b) => (c[b].w / Math.max(1, c[b].w + c[b].l)) - (c[a].w / Math.max(1, c[a].w + c[a].l)))
@@ -316,7 +397,9 @@
       ${recapOrCountdown()}
 
       <div class="card">
-        <h2>Week ${wk} · ${esc(D.currentSeason)} ${LIVE.loaded ? '<span class="pill live">LIVE</span>' : ""}<span class="tag">${anyPlayed ? "" : "season hasn’t kicked off — matchups set"}</span></h2>
+        <h2>Week ${wk} · ${esc(D.currentSeason)} ${LIVE.loaded ? '<span class="pill live">LIVE</span>' : ""}${gamedayActive() ? '<span class="pill champ">🔴 GAMEDAY</span>' : ""}<span class="tag">${gamedayActive()
+          ? "auto-updating every 60s" + (GD.last ? " · updated " + GD.last.toLocaleTimeString() : "") + (GD_SIM ? " · ⚠️ SIMULATED DATA" : "")
+          : anyPlayed ? "" : "season hasn’t kicked off — matchups set"}</span></h2>
         <div class="matchup-grid">${games.map(g => gameRow(g, { teamNames: true, proj: wk })).join("") || '<p class="note">No matchups posted yet.</p>'}</div>
       </div>
 
