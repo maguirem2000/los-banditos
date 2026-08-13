@@ -1322,10 +1322,85 @@
         ${minePosted ? "" : `<div class="controls" style="margin-top:12px"><button class="btn on" id="ht-open">🌶️ Drop your take</button></div>`}
       </div>
       ${wyrCard()}
+      ${pushCard()}
       ${lbCard}
       ${pastWeeks.map(w => `<div class="card"><h2>Week ${w} <span class="tag">${w <= HT.gradeThrough ? "grading open — how did these age?" : "on the record · grading opens week " + (w + 3)}</span></h2>
         <div class="takes-grid">${HT.takes.filter(t => t.week === w).map(takeCard).join("")}</div></div>`).join("")}
       <p class="footnote">Reactions and grades are one vote per manager, signed with your Pick'em PIN. You can’t 🔥 your own take. A take needs 3+ grades for an official verdict.</p>`;
+  }
+
+  /* ---------- push notification reminders ---------- */
+  const VAPID_PUBLIC = "BNuvGGc7igXPBD3jWmH5tKSZQwLFLSDMCFvkF7Mj_xJAZoiXkwD-jjcpX5yaNAtrOmKvnRIAhkW85_8CHePRnrs";
+  const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  function urlB64ToU8(s) {
+    const pad = "=".repeat((4 - s.length % 4) % 4);
+    const b = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(b, c => c.charCodeAt(0));
+  }
+  const pushSay = m => { const el = $("#push-msg"); if (el) el.textContent = m; };
+
+  async function enablePush() {
+    const me = myIdentity();
+    if (!me) { openTakeModal(); return; } // capture identity first (saves PIN)
+    if (!pushSupported()) {
+      pushSay("Not supported in this browser. On iPhone: Share → Add to Home Screen, then enable inside the installed app.");
+      return;
+    }
+    try {
+      pushSay("Asking permission…");
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { pushSay("Notifications were blocked — allow them in Settings and retry."); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToU8(VAPID_PUBLIC) });
+      const j = await fetch(`${PICKS_API}/push/subscribe`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: me.uid, pin: me.pin, sub: sub.toJSON() }),
+      }).then(r => r.json());
+      if (j.ok) { localStorage.setItem("banditos_push", "1"); render(); }
+      else pushSay("✗ " + (j.error || "failed"));
+    } catch (e) { pushSay("✗ " + (e.message || e)); }
+  }
+
+  async function testPush() {
+    const me = myIdentity();
+    if (!me) return;
+    pushSay("Sending…");
+    try {
+      const j = await fetch(`${PICKS_API}/push/test`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: me.uid, pin: me.pin }),
+      }).then(r => r.json());
+      pushSay(j.ok ? (j.sent ? `✓ Sent to ${j.sent} device${j.sent > 1 ? "s" : ""} — check your notifications.` : "No live subscriptions found — re-enable and try again.") : "✗ " + (j.error || "failed"));
+    } catch (e) { pushSay("✗ network error"); }
+  }
+
+  function pushCard() {
+    const on = localStorage.getItem("banditos_push");
+    return `<div class="card"><h2>🔔 Reminders <span class="tag">straight to your phone</span></h2>
+      <p class="note">Two nudges a week, and only when you're the one holding things up: <b>Wednesday 6pm</b> if your hot take isn't in, and <b>Thursday 4pm</b> during the season if your picks aren't in before lock. iPhone: install the app first (Share → Add to Home Screen), then enable in the installed app.</p>
+      <div class="controls">
+        ${on
+          ? '<span class="pill live">ENABLED ON THIS DEVICE</span> <button class="btn" id="push-test">Send test</button> <button class="btn" id="push-off">Disable</button>'
+          : '<button class="btn on" id="push-enable">🔔 Enable notifications</button>'}
+        <span class="note" style="margin:0" id="push-msg"></span>
+      </div></div>`;
+  }
+
+  async function disablePush() {
+    const me = myIdentity();
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        if (me) await fetch(`${PICKS_API}/push/unsubscribe`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uid: me.uid, pin: me.pin, endpoint: sub.endpoint }),
+        });
+        await sub.unsubscribe();
+      }
+    } catch (e) { /* best effort */ }
+    localStorage.removeItem("banditos_push");
+    render();
   }
 
   /* ---------- WHO YA RATHER (weekly player poll) ---------- */
@@ -2426,6 +2501,9 @@
     if (gr) { const [w, tu, v] = gr.dataset.grade.split("|"); voteTake("grade", w, tu, v); return; }
     if (e.target.id === "ht-open") { openTakeModal(); return; }
     if (e.target.id === "ht-submit") { submitTake(); return; }
+    if (e.target.id === "push-enable") { enablePush(); return; }
+    if (e.target.id === "push-test") { testPush(); return; }
+    if (e.target.id === "push-off") { disablePush(); return; }
     const wy = e.target.closest("[data-wyr]");
     if (wy) {
       const p = wy.dataset.wyr.split("|"); // "week|sidA|sidB|pick"

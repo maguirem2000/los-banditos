@@ -1,3 +1,5 @@
+import { buildPushPayload } from "@block65/webcrypto-web-push";
+
 /**
  * Los Banditos picks & power-poll backend (Cloudflare Worker + KV).
  *
@@ -16,6 +18,12 @@
  *   POST /wyrpairs               {season, week, pairs: [[sid,sid]…]} — seed the week's "who ya rather" pairs (first write wins)
  *   POST /wyrvote                {uid, pin, season, week, pairKey, pick}
  *   GET  /wyr?season=S           stored pairs per week + all votes
+ *   POST /push/subscribe         {uid, pin, sub} — register a Web Push subscription for reminders
+ *   POST /push/unsubscribe       {uid, pin, endpoint}
+ *   POST /push/test              {uid, pin} — send a test notification to your own devices
+ *
+ * Cron (see wrangler.toml): Wed 6pm CT hot-take/poll reminder, Thu 4pm CT
+ * pick'em reminder — each only to subscribed managers who haven't done it.
  */
 
 const ALLOWED_ORIGINS = ["https://lbffl.com", "https://www.lbffl.com",
@@ -75,9 +83,9 @@ async function nflState() {
   try {
     const r = await fetch("https://api.sleeper.app/v1/state/nfl");
     const s = await r.json();
-    stateCache = { v: { season: String(s.season), week: Number(s.week) || 0 }, ts: Date.now() };
+    stateCache = { v: { season: String(s.season), week: Number(s.week) || 0, type: s.season_type || "" }, ts: Date.now() };
   } catch (e) {
-    stateCache = { v: { season: null, week: 0 }, ts: Date.now() };
+    stateCache = { v: { season: null, week: 0, type: "" }, ts: Date.now() };
   }
   return stateCache.v;
 }
@@ -94,6 +102,68 @@ async function gradeableThroughWeek(env, season) {
 function authed(env, b) {
   const pins = JSON.parse(env.PINS || "{}");
   return b && b.uid && pins[b.uid] && String(b.pin) === String(pins[b.uid]);
+}
+
+/* ---------------- web push ---------------- */
+const vapidOf = env => ({ subject: env.VAPID_SUBJECT, publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY });
+const subId = endpoint => btoa(endpoint).replace(/[^a-zA-Z0-9]/g, "").slice(-24);
+
+async function pushTo(env, uid, data) {
+  let sent = 0;
+  for (const k of await listAllKeys(env, `push:${uid}:`)) {
+    const sub = await env.PICKS.get(k.name, "json");
+    if (!sub) continue;
+    try {
+      const payload = await buildPushPayload(
+        { data: JSON.stringify(data), options: { ttl: 6 * 3600, urgency: "normal" } },
+        sub, vapidOf(env));
+      const res = await fetch(sub.endpoint, payload);
+      if (res.status === 404 || res.status === 410) await env.PICKS.delete(k.name); // device gone
+      else if (res.ok || res.status === 201) sent++;
+    } catch (e) { /* transient failure — keep the subscription for next time */ }
+  }
+  return sent;
+}
+
+async function subscribedUids(env) {
+  const uids = new Set();
+  for (const k of await listAllKeys(env, "push:")) uids.add(k.name.split(":")[1]);
+  return uids;
+}
+
+async function runCron(env, cron) {
+  const st = await nflState();
+  if (!st.season) return;
+  const wk = Math.max(1, Math.min(18, st.week || 1));
+  const subscribed = await subscribedUids(env);
+  if (!subscribed.size) return;
+
+  if (cron.endsWith("* * 3")) { // Wednesday: hot take + who-ya-rather
+    if (!["pre", "regular"].includes(st.type)) return;
+    const posted = new Set((await listAllKeys(env, `take:${st.season}:${wk}:`)).map(k => k.name.split(":")[3]));
+    for (const uid of subscribed) {
+      if (posted.has(uid)) continue;
+      await pushTo(env, uid, {
+        title: "🌶️ Hot Take Wednesday",
+        body: `Week ${wk} takes and Who-Ya-Rather polls are open — the league is waiting on yours.`,
+        url: "https://lbffl.com/#/takes",
+      });
+    }
+  }
+
+  if (cron.endsWith("* * 4")) { // Thursday: pick'em locks tonight
+    if (st.type !== "regular") return;
+    if (await weekLocked(env, st.season, wk)) return; // already kicked off
+    const submitted = new Set((await listAllKeys(env, `sub:${st.season}:${wk}:`)).map(k => k.name.split(":")[3]));
+    for (const uid of subscribed) {
+      if (submitted.has(uid)) continue;
+      await pushTo(env, uid, {
+        title: "🏈 Pick'em locks tonight",
+        body: `Week ${wk} picks lock at kickoff and yours aren't in yet.`,
+        url: "https://lbffl.com/#/picks",
+      });
+    }
+  }
 }
 
 export default {
@@ -252,6 +322,35 @@ export default {
         return new Response(JSON.stringify({ ok: true }), { headers });
       }
 
+      if (req.method === "POST" && url.pathname === "/push/subscribe") {
+        const b = await req.json();
+        if (!authed(env, b)) return new Response(JSON.stringify({ error: "bad pin" }), { status: 403, headers });
+        const sub = b.sub;
+        if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+          return new Response(JSON.stringify({ error: "bad subscription" }), { status: 400, headers });
+        }
+        await env.PICKS.put(`push:${b.uid}:${subId(sub.endpoint)}`, JSON.stringify(sub));
+        return new Response(JSON.stringify({ ok: true }), { headers });
+      }
+
+      if (req.method === "POST" && url.pathname === "/push/unsubscribe") {
+        const b = await req.json();
+        if (!authed(env, b)) return new Response(JSON.stringify({ error: "bad pin" }), { status: 403, headers });
+        if (b.endpoint) await env.PICKS.delete(`push:${b.uid}:${subId(b.endpoint)}`);
+        return new Response(JSON.stringify({ ok: true }), { headers });
+      }
+
+      if (req.method === "POST" && url.pathname === "/push/test") {
+        const b = await req.json();
+        if (!authed(env, b)) return new Response(JSON.stringify({ error: "bad pin" }), { status: 403, headers });
+        const sent = await pushTo(env, b.uid, {
+          title: "🔔 Notifications are on",
+          body: "You'll get the Wednesday hot-take nudge and Thursday pick'em alerts right here.",
+          url: "https://lbffl.com/",
+        });
+        return new Response(JSON.stringify({ ok: true, sent }), { headers });
+      }
+
       if (req.method === "GET" && url.pathname === "/wyr") {
         const season = url.searchParams.get("season");
         const pairs = {};
@@ -273,5 +372,9 @@ export default {
     } catch (e) {
       return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers });
     }
+  },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runCron(env, event.cron));
   },
 };

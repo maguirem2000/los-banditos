@@ -4,6 +4,12 @@ compatibility_date = "2026-08-01"
 
 [vars]
 LEAGUE_ID = "1315162051303194624"
+VAPID_SUBJECT = "mailto:maguirettu@gmail.com"
+VAPID_PUBLIC_KEY = "BNuvGGc7igXPBD3jWmH5tKSZQwLFLSDMCFvkF7Mj_xJAZoiXkwD-jjcpX5yaNAtrOmKvnRIAhkW85_8CHePRnrs"
+
+# Wed 6pm CT (23:00 UTC): hot-take + poll reminder · Thu 4pm CT (21:00 UTC): pick'em reminder
+[triggers]
+crons = ["0 23 * * 3", "0 21 * * 4"]
 
 [[kv_namespaces]]
 binding = "PICKS"
