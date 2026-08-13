@@ -617,7 +617,7 @@ payload = {
     "pickLedger": pick_ledger,
     "draftVia": draft_via,
     "recordsWatch": watch,
-    "kickoff": "2026-09-10T20:20:00-04:00",
+    "kickoff": "2026-09-09T20:20:00-04:00",
     "franchise": franchise,
     "tenureLeaders": tenure_out,
     "whatIf": what_if,

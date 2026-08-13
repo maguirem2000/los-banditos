@@ -423,12 +423,13 @@
       if (weekMatchups(D.currentSeason, w).some(g => g.played)) { lastWk = w; break; }
     }
     if (!lastWk) {
-      const ko = new Date(E.kickoff || "2026-09-10T20:20:00-04:00");
+      const ko = new Date(E.kickoff || "2026-09-09T20:20:00-04:00");
       const days = Math.max(0, Math.ceil((ko - Date.now()) / 86400000));
+      const koLbl = ko.toLocaleDateString("en-US", { month: "short", day: "numeric" });
       return `<div class="card countdown">
         <h2>Kickoff Countdown</h2>
         <div class="cd-num">${days}</div>
-        <div class="cd-sub">days until the ${esc(D.currentSeason)} season opener (Sept 10). Draft is done — rosters are locked and loaded.</div>
+        <div class="cd-sub">days until the ${esc(D.currentSeason)} season opener (${esc(koLbl)}). Draft is done — rosters are locked and loaded.</div>
       </div>`;
     }
     const games = weekMatchups(D.currentSeason, lastWk).filter(g => g.played);
