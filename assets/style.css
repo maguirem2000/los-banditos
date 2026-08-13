@@ -323,3 +323,14 @@ ul.watch .wi { margin-right: 6px; }
   main { padding: 14px 12px 60px; }
   .card { padding: 13px 13px; }
 }
+
+/* trade finder */
+.pos-chip {
+  display: inline-block; padding: 2px 8px; border-radius: 6px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.4px; margin: 1px 3px 1px 0;
+}
+.pos-chip.good { color: var(--aqua); background: rgba(25, 158, 112, 0.14); border: 1px solid rgba(25, 158, 112, 0.4); }
+.pos-chip.bad { color: var(--red); background: rgba(230, 103, 103, 0.12); border: 1px solid rgba(230, 103, 103, 0.4); }
+.tf-spec { position: relative; height: 6px; border-radius: 3px; min-width: 96px; background: linear-gradient(90deg, var(--aqua), var(--gold)); }
+.tf-spec .dot { position: absolute; top: -4px; width: 13px; height: 13px; border-radius: 50%; background: var(--ink); border: 2px solid var(--surface); }
+.tf-spec-lbl { font-size: 10.5px; color: var(--muted); margin-top: 5px; white-space: nowrap; }

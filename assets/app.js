@@ -117,6 +117,7 @@
     players: { label: "Passports", render: vPlayers },
     bench: { label: "Boneheads", render: vBench },
     trades: { label: "Trades", render: vTrades },
+    tradefinder: { label: "Trade Finder", render: vTradeFinder },
     awards: { label: "Awards", render: vAwards },
     trophies: { label: "Trophy Room", render: vTrophies },
     shame: { label: "Shame Wall", render: vShame },
@@ -128,7 +129,7 @@
     { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds", picks: "Pick'em & Poll" } },
     { label: "History", views: { records: "Record Book", h2h: "Head-to-Head", elo: "Elo Ratings", awards: "Awards", players: "Passports" } },
     { label: "Teams", views: { franchises: "Franchise Pages", bench: "Boneheads" } },
-    { label: "Moves", views: { trades: "Trades & Waivers", drafts: "Drafts" } },
+    { label: "Moves", views: { trades: "Trades & Waivers", tradefinder: "Trade Finder", drafts: "Drafts" } },
     { label: "Trophies", views: { trophies: "Trophy Room", shame: "Shame Wall" } },
   ];
   const groupOf = view => GROUPS.find(g => view in g.views) || GROUPS[0];
@@ -1247,6 +1248,217 @@
       </div>`;
   }
 
+  /* ---------- TRADE FINDER ---------- */
+  const TF = { pending: false, loaded: false, failed: false, val: {}, model: null };
+  function loadTradeValues() {
+    if (TF.pending || TF.loaded) return;
+    TF.pending = true;
+    fetch("https://api.fantasycalc.com/values/current?isDynasty=true&numQbs=1&numTeams=8&ppr=1")
+      .then(r => r.json())
+      .then(rows => {
+        rows.forEach(r => {
+          const sid = r.player && r.player.sleeperId;
+          if (!sid) return;
+          TF.val[sid] = { v: r.value, name: r.player.name, pos: r.player.position, age: r.player.maybeAge,
+            posRank: r.positionRank, trend: r.trend30Day || 0 };
+        });
+        TF.loaded = true; TF.pending = false;
+        if (state.view === "tradefinder") render();
+      })
+      .catch(() => { TF.failed = true; TF.pending = false; if (state.view === "tradefinder") render(); });
+  }
+
+  const TF_POS = ["QB", "RB", "WR", "TE"];
+  function tradeModel() {
+    if (!LIVE.loaded || !TF.loaded) return null;
+    if (TF.model) return TF.model;
+    const SLOTS = { QB: 1, RB: 2, WR: 2, TE: 1 }, FLEX = 3;
+    const teams = {}, uids = [];
+    LIVE.rosters.forEach(r => {
+      const uid = r.owner_id; uids.push(uid);
+      const players = (r.players || []).map(pid => {
+        const fc = TF.val[pid];
+        return { pid, pos: fc ? fc.pos : ppos(pid), name: fc ? fc.name : pname(pid),
+          v: fc ? fc.v : 0, age: fc ? fc.age : null, trend: fc ? fc.trend : 0, posRank: fc ? fc.posRank : null };
+      }).filter(p => TF_POS.includes(p.pos)).sort((a, b) => b.v - a.v);
+      /* starters = best lineup by market value: 1QB 2RB 2WR 1TE + 3 flex */
+      const starters = new Set();
+      TF_POS.forEach(p => players.filter(x => x.pos === p).slice(0, SLOTS[p]).forEach(x => starters.add(x.pid)));
+      players.filter(x => !starters.has(x.pid) && x.pos !== "QB").slice(0, FLEX).forEach(x => starters.add(x.pid));
+      const startVal = {}, depthVal = {}, depth = {};
+      TF_POS.forEach(p => { startVal[p] = 0; depthVal[p] = 0; depth[p] = []; });
+      players.forEach(x => {
+        if (starters.has(x.pid)) startVal[x.pos] += x.v;
+        else { depthVal[x.pos] += x.v; depth[x.pos].push(x); }
+      });
+      const total = players.reduce((s, x) => s + x.v, 0);
+      teams[uid] = { players, starters, startVal, depthVal, depth, total,
+        wAge: total ? players.reduce((s, x) => s + (x.age || 26) * x.v, 0) / total : 26,
+        trend: players.reduce((s, x) => s + x.trend, 0) };
+    });
+    const med = arr => { const s = arr.slice().sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+    const medStart = {}, medDepth = {};
+    TF_POS.forEach(p => { medStart[p] = med(uids.map(u => teams[u].startVal[p])); medDepth[p] = med(uids.map(u => teams[u].depthVal[p])); });
+    uids.forEach(u => {
+      const t = teams[u]; t.need = {}; t.sur = {};
+      TF_POS.forEach(p => {
+        const th = 0.1 * medStart[p]; // ignore sub-10% edges — everyone is "close to median" somewhere
+        const need = medStart[p] - t.startVal[p];
+        t.need[p] = need >= th ? need : 0;
+        const raw = Math.max(0, t.depthVal[p] - medDepth[p]) + 0.25 * Math.max(0, t.startVal[p] - medStart[p]);
+        t.sur[p] = (!t.need[p] && raw >= th) ? raw : 0; // a position can't be both a need and a surplus
+      });
+      /* tradeable pool: the bench, plus the cheapest starter anywhere the starting group is way above median */
+      t.pool = [];
+      TF_POS.forEach(p => {
+        t.pool.push(...t.depth[p]);
+        if (t.startVal[p] > medStart[p] * 1.4) {
+          const st = t.players.filter(x => x.pos === p && t.starters.has(x.pid));
+          if (st.length) t.pool.push(st[st.length - 1]);
+        }
+      });
+      t.pool.sort((a, b) => b.v - a.v);
+      t.bait = t.pool.find(x => t.sur[x.pos] > 0) || t.pool[0] || null;
+    });
+    const fit = (a, b) => TF_POS.reduce((s, p) => s + Math.min(teams[a].sur[p], teams[b].need[p]), 0);
+    const pairs = [];
+    for (let i = 0; i < uids.length; i++) for (let j = i + 1; j < uids.length; j++) {
+      const a = uids[i], b = uids[j];
+      const ageGap = Math.abs(teams[a].wAge - teams[b].wAge);
+      pairs.push({ a, b, fitAB: fit(a, b), fitBA: fit(b, a), ageGap,
+        comp: fit(a, b) + fit(b, a) + Math.min(1200, Math.max(0, ageGap - 0.7) * 500) });
+    }
+    const maxComp = Math.max(...pairs.map(p => p.comp), 1);
+    pairs.forEach(p => p.score = Math.round(p.comp / maxComp * 100));
+    pairs.sort((x, y) => y.comp - x.comp);
+    const compOf = {};
+    pairs.forEach(p => { (compOf[p.a] = compOf[p.a] || {})[p.b] = p; (compOf[p.b] = compOf[p.b] || {})[p.a] = p; });
+    TF.model = { teams, uids, pairs, compOf };
+    return TF.model;
+  }
+
+  const tfName = p => (E.passports || {})[p.pid] ? `<b>${pchip(p.pid)}</b>` : `<b>${esc(p.name)}</b>`;
+  const tfChips = (t, kind) => TF_POS.filter(p => kind === "good" ? t.sur[p] > 0 : t.need[p] > 0)
+    .sort((x, y) => kind === "good" ? t.sur[y] - t.sur[x] : t.need[y] - t.need[x])
+    .map(p => `<span class="pos-chip ${kind}">${p}</span>`).join("") || '<span style="color:var(--muted)">—</span>';
+
+  /* value-balanced 1-for-1s that address a need on both sides */
+  function pairSwaps(a, b, m) {
+    const A = m.teams[a], B = m.teams[b], out = [];
+    A.pool.forEach(x => {
+      if (!(B.need[x.pos] > 0 && A.sur[x.pos] > 0)) return;
+      B.pool.forEach(y => {
+        if (!(A.need[y.pos] > 0 && B.sur[y.pos] > 0) || y.pos === x.pos) return;
+        const hi = Math.max(x.v, y.v), lo = Math.min(x.v, y.v);
+        if (!hi || lo / hi < 0.72) return;
+        out.push({ x, y, score: lo * (lo / hi) });
+      });
+    });
+    out.sort((p, q) => q.score - p.score);
+    const seen = new Set(), top = [];
+    out.forEach(s => {
+      if (top.length < 3 && !seen.has(s.x.pid) && !seen.has(s.y.pid)) { top.push(s); seen.add(s.x.pid); seen.add(s.y.pid); }
+    });
+    return top;
+  }
+
+  function pairReason(p, m) {
+    const A = m.teams[p.a], B = m.teams[p.b];
+    const gives = (t, o) => TF_POS.filter(x => t.sur[x] > 0 && o.need[x] > 0);
+    const ab = gives(A, B), ba = gives(B, A);
+    const bits = [];
+    if (ab.length) bits.push(`${nameOf(p.a)} has spare ${ab.join("/")} — exactly what ${nameOf(p.b)} is missing`);
+    if (ba.length) bits.push(`${nameOf(p.b)} can send ${ba.join("/")} back`);
+    if (p.ageGap >= 1.4) {
+      const older = A.wAge > B.wAge ? p.a : p.b, younger = older === p.a ? p.b : p.a;
+      bits.push(`timelines diverge — ${nameOf(older)} is win-now, ${nameOf(younger)} is building: vets-for-picks territory`);
+    }
+    return bits.join(" · ") || "no complementary pieces — these two shop at the same store";
+  }
+
+  const pastTrades = (a, b) => (E.trades || []).filter(t =>
+    t.sides.length === 2 && t.sides.some(s => s.uid === a) && t.sides.some(s => s.uid === b));
+
+  function vTradeFinder() {
+    if (!LIVE.loaded) return '<div class="card"><p class="note">Connecting to Sleeper…</p></div>';
+    loadTradeValues();
+    if (TF.failed) return '<div class="card"><h2>Trade Finder</h2><p class="note">Couldn’t reach the market-value feed (FantasyCalc). Refresh to retry.</p></div>';
+    if (!TF.loaded) return '<div class="card"><h2>Trade Finder</h2><p class="note">Pricing the league — fetching live dynasty market values…</p></div>';
+    const m = tradeModel();
+    const byVal = m.uids.slice().sort((x, y) => m.teams[y].total - m.teams[x].total);
+    const ages = m.uids.map(u => m.teams[u].wAge);
+    const aMin = Math.min(...ages), aMax = Math.max(...ages);
+    const maxTot = m.teams[byVal[0]].total;
+
+    const board = byVal.map((u, i) => {
+      const t = m.teams[u];
+      const spec = aMax > aMin ? (t.wAge - aMin) / (aMax - aMin) : 0.5;
+      return `<tr class="me-row"><td class="rank-cell">${i + 1}</td><td>${mgrChip(u)}</td>
+        <td class="num"><b>${fmt(t.total, 0)}</b></td>
+        <td><div class="ibar"><div class="track"><div class="fill" style="width:${(t.total / maxTot * 100).toFixed(1)}%;background:${colorOf(u)}"></div></div></div></td>
+        <td><div class="tf-spec"><div class="dot" style="left:calc(${(spec * 100).toFixed(0)}% - 6px)"></div></div><div class="tf-spec-lbl">${spec < 0.35 ? "🌱 building" : spec > 0.65 ? "🏆 win-now" : "⚖️ hybrid"} · avg age ${fmt(t.wAge, 1)}</div></td>
+        <td class="num" style="color:${t.trend >= 0 ? "var(--good)" : "var(--red)"}">${t.trend >= 0 ? "▲" : "▼"}${fmt(Math.abs(t.trend), 0)}</td>
+        <td>${tfChips(t, "good")}</td><td>${tfChips(t, "bad")}</td>
+        <td>${t.bait ? `${tfName(t.bait)} <small style="color:var(--muted)">${esc(t.bait.pos)} · ${fmt(t.bait.v, 0)}</small>` : "—"}</td></tr>`;
+    }).join("");
+
+    const mUids = m.uids.slice().sort((x, y) => (seatOf[x] || 9) - (seatOf[y] || 9));
+    const cell = (a, b) => {
+      if (a === b) return '<td class="self"></td>';
+      const p = m.compOf[a][b];
+      return `<td style="background:${divergingColor(0.5 + (p.score / 100) * 0.5)}" data-tfpair="${esc(a)}|${esc(b)}">${p.score}</td>`;
+    };
+
+    const medals = ["🥇", "🥈", "🥉", "🤝", "🤝"];
+    const best = m.pairs.slice(0, 5).map((p, i) => {
+      const sw = pairSwaps(p.a, p.b, m)[0];
+      return `<li><span class="wi">${medals[i]}</span> <b>${esc(nameOf(p.a))} ↔ ${esc(nameOf(p.b))}</b> <span class="pill live">fit ${p.score}</span><br>
+        <span style="color:var(--muted)">${esc(pairReason(p, m))}${sw ? ` · try: ` : ""}</span>${sw ? `${tfName(sw.x)} ⇄ ${tfName(sw.y)}` : ""}</li>`;
+    }).join("");
+
+    return `
+      <div class="card"><h2>Trade Compatibility <span class="tag">who should be calling whom · click any cell</span></h2>
+        <p class="note">Fit = how well one team’s positional surplus lines up with the other’s needs (both directions), plus a bonus when their timelines diverge. 100 = the league’s best match.</p>
+        <div class="h2h-wrap"><table class="h2h">
+          <tr><th></th>${mUids.map(u => `<th>${esc(nameOf(u))}</th>`).join("")}</tr>
+          ${mUids.map(a => `<tr><th>${mgrChip(a)}</th>${mUids.map(b => cell(a, b)).join("")}</tr>`).join("")}
+        </table></div></div>
+      <div class="card"><h2>Best Fits Right Now <span class="tag">the front-office phone calls to make</span></h2>
+        <ul class="watch">${best}</ul></div>
+      <div class="card"><h2>League Trade Board <span class="tag">live dynasty market values · surplus, needs &amp; trade bait</span></h2>
+        <div class="table-scroll"><table>
+        <tr><th></th><th>Manager</th><th class="num">Roster Value</th><th style="min-width:130px"></th><th>Timeline</th><th class="num">30-Day</th><th>Surplus</th><th>Needs</th><th>Top Trade Bait</th></tr>
+        ${board}
+        </table></div>
+        <p class="note" style="margin-top:8px">Surplus/needs compare each team’s best starting lineup and bench depth to the league median at every position. “Trade bait” = the most valuable piece a team can deal from strength.</p></div>
+      <p class="footnote">Market values: FantasyCalc dynasty (1QB · 8-team · PPR), refreshed on every page load. 30-Day = roster-wide value trend. K/DEF excluded.</p>`;
+  }
+
+  function openTradePair(a, b) {
+    const m = tradeModel(); if (!m) return;
+    const p = m.compOf[a][b];
+    const swaps = pairSwaps(a, b, m);
+    const hist = pastTrades(a, b);
+    const side = u => {
+      const t = m.teams[u];
+      return `<div class="trade-side"><div class="ts-head">${mgrChip(u)}</div>
+        <p class="note" style="margin:6px 0">value ${fmt(t.total, 0)} · avg age ${fmt(t.wAge, 1)}</p>
+        <div style="margin:4px 0">Can offer ${tfChips(t, "good")}</div>
+        <div>Needs ${tfChips(t, "bad")}</div></div>`;
+    };
+    showModal(`
+      <button class="close" data-close>×</button>
+      <h3>${esc(nameOf(a))} ↔ ${esc(nameOf(b))} <span class="pill live">fit ${p.score}/100</span></h3>
+      <p class="note">${esc(pairReason(p, m))}</p>
+      <div class="matchup trade" style="margin-top:10px">${side(a)}${side(b)}</div>
+      <div class="section-title">Suggested swaps — value-balanced, both sides improve</div>
+      ${swaps.length ? `<ul class="watch">${swaps.map(s =>
+        `<li><span class="wi">🔁</span> ${tfName(s.x)} <small style="color:var(--muted)">${esc(s.x.pos)} · ${fmt(s.x.v, 0)}</small> ⇄ ${tfName(s.y)} <small style="color:var(--muted)">${esc(s.y.pos)} · ${fmt(s.y.v, 0)}</small></li>`).join("")}</ul>`
+        : '<p class="note">No clean 1-for-1 on the board — this one needs draft picks or a 2-for-1 to balance.</p>'}
+      <div class="section-title">Track record</div>
+      <p class="note">${hist.length ? `These two have made <b>${hist.length}</b> trade${hist.length > 1 ? "s" : ""} before — the line is warm.` : "These two have never traded. Somebody break the ice."}</p>`);
+  }
+
   /* ---------- playoff odds (Monte Carlo, current season) ---------- */
   function playoffOdds() {
     if (!LIVE.loaded) return null;
@@ -1608,6 +1820,8 @@
     if (mgr && !e.target.closest(".modal")) { openManager(mgr.dataset.mgr); return; }
     const cell = e.target.closest("[data-h2h]");
     if (cell) { const [a, b] = cell.dataset.h2h.split("|"); openH2HLog(a, b); return; }
+    const tfp = e.target.closest("[data-tfpair]");
+    if (tfp) { const [a, b] = tfp.dataset.tfpair.split("|"); openTradePair(a, b); return; }
     const wk = e.target.closest("[data-week]");
     if (wk) { state.week = +wk.dataset.week; state.weekTouched = true; render(); return; }
     const pick = e.target.closest("[data-pick]");
