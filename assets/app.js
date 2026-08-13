@@ -113,6 +113,7 @@
     records: { label: "Record Book", render: vRecords },
     power: { label: "Power Rankings", render: vPower },
     picks: { label: "Pick'em & Poll", render: vPicks },
+    preview: { label: "Season Preview", render: vPreview },
     franchises: { label: "Franchises", render: vFranchise },
     elo: { label: "Elo Ratings", render: vElo },
     players: { label: "Passports", render: vPlayers },
@@ -127,7 +128,7 @@
   /* nav groups: 6 top-level sections, sub-pages as pills */
   const GROUPS = [
     { label: "Home", views: { home: "Home" } },
-    { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds", picks: "Pick'em & Poll" } },
+    { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds", picks: "Pick'em & Poll", preview: "Season Preview" } },
     { label: "History", views: { records: "Record Book", h2h: "Head-to-Head", elo: "Elo Ratings", awards: "Awards", players: "Passports" } },
     { label: "Teams", views: { franchises: "Franchise Pages", bench: "Boneheads" } },
     { label: "Moves", views: { trades: "Trades & Waivers", tradefinder: "Trade Finder", drafts: "Drafts" } },
@@ -248,27 +249,72 @@
   }
   setInterval(refreshLive, 60000);
 
-  /* live win probability: actual points banked + remaining projection, uncertainty shrinks as games burn down */
+  /* banked starter points + remaining projection for one team's live week */
+  function gdEst(uid, wk) {
+    const map = projCache[wk];
+    if (!map || !LIVE.loaded) return null;
+    const rid = LIVE.rosters.find(r => r.owner_id === uid)?.roster_id;
+    const row = (LIVE.matchups[wk] || []).find(r => r.roster_id === rid);
+    if (!row || !(row.starters || []).length) return null;
+    let act = 0, rem = 0, projTot = 0;
+    row.starters.forEach(pid => {
+      const a = (row.players_points || {})[pid] || 0, pr = map[pid] || 0;
+      act += a; projTot += pr; rem += Math.max(0, pr - a);
+    });
+    return { act, rem, projTot, exp: act + rem };
+  }
+
+  /* live win probability: uncertainty shrinks as games burn down */
   function liveWinProb(g) {
     if (!LIVE.loaded || g.season !== D.currentSeason || g.week !== LIVE.week) return null;
     if (!gamedayActive() && !g.played) return null;
-    const map = projCache[g.week];
-    if (!map) { fetchProjections(g.week); return null; }
+    if (!projCache[g.week]) { fetchProjections(g.week); return null; }
     const est = uid => {
-      const rid = LIVE.rosters.find(r => r.owner_id === uid)?.roster_id;
-      const row = (LIVE.matchups[g.week] || []).find(r => r.roster_id === rid);
-      if (!row || !(row.starters || []).length) return null;
-      let act = 0, rem = 0, projTot = 0;
-      row.starters.forEach(pid => {
-        const a = (row.players_points || {})[pid] || 0, pr = map[pid] || 0;
-        act += a; projTot += pr; rem += Math.max(0, pr - a);
-      });
+      const e = gdEst(uid, g.week);
+      if (!e) return null;
       const prof = scoringProfile(uid);
-      return { exp: act + rem, sd: Math.max(4, prof.sd * (projTot > 0 ? Math.sqrt(rem / projTot) : 1)) };
+      return { exp: e.exp, sd: Math.max(4, prof.sd * (e.projTot > 0 ? Math.sqrt(e.rem / e.projTot) : 1)) };
     };
     const A = est(g.a.uid), B = est(g.b.uid);
     if (!A || !B) return null;
     return { pA: normCdf((A.exp - B.exp) / Math.sqrt(A.sd * A.sd + B.sd * B.sd)), expA: A.exp, expB: B.exp };
+  }
+
+  /* league records in danger right now, shown only while games are live */
+  function liveRecordsWatch() {
+    if (!LIVE.loaded || !gamedayActive()) return "";
+    const wk = LIVE.week || 1;
+    const games = weekMatchups(D.currentSeason, wk);
+    if (!games.some(g => g.played) || !projCache[wk]) return "";
+    const R = D.records, items = [];
+    const hi = R.highScores[0], lo = R.lowScores[0];
+    const ests = {};
+    games.forEach(g => [g.a.uid, g.b.uid].forEach(u => { const e = gdEst(u, wk); if (e) ests[u] = e; }));
+    Object.entries(ests).forEach(([uid, e]) => {
+      if (e.exp >= hi.pts - 12) items.push({ icon: "🚨", text: `${nameOf(uid)} projects to ${fmt(e.exp, 1)} — the all-time record is ${fmt(hi.pts)} (${nameOf(hi.uid)}, ${hi.season})` });
+      if (e.act > 20 && e.exp <= lo.pts + 12) items.push({ icon: "🧻", text: `${nameOf(uid)} is pacing toward ${fmt(e.exp, 1)} — the all-time floor is ${fmt(lo.pts)} (${nameOf(lo.uid)}, ${lo.season})` });
+    });
+    games.forEach(g => {
+      const ea = ests[g.a.uid], eb = ests[g.b.uid];
+      if (!ea || !eb) return;
+      const margin = Math.abs(ea.exp - eb.exp), total = ea.exp + eb.exp;
+      const bw = R.blowouts[0], sh = R.shootouts[0];
+      if (margin >= bw.margin - 15) items.push({ icon: "💥", text: `${nameOf(ea.exp >= eb.exp ? g.a.uid : g.b.uid)} is projected to win by ${fmt(margin, 1)} — the biggest beatdown ever is ${fmt(bw.margin)}` });
+      if (total >= sh.hi.pts + sh.lo.pts - 20) items.push({ icon: "🎆", text: `${nameOf(g.a.uid)} vs ${nameOf(g.b.uid)} projects to ${fmt(total, 1)} combined — the shootout record is ${fmt(sh.hi.pts + sh.lo.pts)}` });
+    });
+    if (E.playerRecords && E.playerRecords.topStarters.length) {
+      const rec = E.playerRecords.topStarters[0];
+      const r2u = {}; LIVE.rosters.forEach(r => r2u[r.roster_id] = r.owner_id);
+      (LIVE.matchups[wk] || []).forEach(row => {
+        const starters = new Set(row.starters || []);
+        Object.entries(row.players_points || {}).forEach(([pid, pts]) => {
+          if (starters.has(pid) && pts >= rec.pts - 12) items.push({ icon: "⭐", text: `${pname(pid)} has ${fmt(pts)} for ${nameOf(r2u[row.roster_id])} — the best game ever started is ${fmt(rec.pts)} (${pname(rec.pid)})` });
+        });
+      });
+    }
+    if (!items.length) return "";
+    return `<div class="card"><h2>Live Records Watch <span class="pill live">LIVE</span> <span class="tag">history is in danger right now</span></h2>
+      <ul class="watch">${items.slice(0, 6).map(i => `<li><span class="wi">${i.icon}</span> ${esc(i.text)}</li>`).join("")}</ul></div>`;
   }
 
   function wpLine(g) {
@@ -403,8 +449,12 @@
         <div class="matchup-grid">${games.map(g => gameRow(g, { teamNames: true, proj: wk })).join("") || '<p class="note">No matchups posted yet.</p>'}</div>
       </div>
 
+      ${liveRecordsWatch()}
+
       ${(E.recordsWatch || []).length ? `<div class="card"><h2>Records Watch <span class="tag">storylines heading into ${esc(D.currentSeason)}</span></h2>
         <ul class="watch">${E.recordsWatch.map(w => `<li><span class="wi">${w.icon}</span> ${esc(w.text)}</li>`).join("")}</ul></div>` : ""}
+
+      ${historyCard()}
 
       <div class="card">
         <h2>All-Time Standings <span class="tag">regular season, ${D.completeSeasons[0]}–${lastSeason}</span></h2>
@@ -462,6 +512,49 @@
         <li>💥 <b>Beatdown:</b> ${esc(gname(beatdown))}</li>
         ${pow}${blunder}
       </ul></div>`;
+  }
+
+  /* one notable moment per past season from the current week number */
+  function historyCard() {
+    const wk = LIVE.loaded ? LIVE.week : 1;
+    const R = D.records;
+    const rankIn = (list, pred) => { const i = (list || []).findIndex(pred); return i < 0 ? null : i + 1; };
+    const items = [];
+    D.completeSeasons.slice().reverse().forEach(s => {
+      const games = ALL_GAMES.filter(g => g.season === s && g.week === wk);
+      if (!games.length) return;
+      let best = null;
+      games.forEach(g => {
+        const hi = g.a.pts >= g.b.pts ? g.a : g.b, lo = g.a.pts >= g.b.pts ? g.b : g.a;
+        const margin = hi.pts - lo.pts;
+        const cand = [];
+        if (g.type === "championship" && g.winner) {
+          const loser = g.winner === g.a.uid ? g.b.uid : g.a.uid;
+          cand.push({ pri: 0, icon: "🏆", text: `${nameOf(g.winner)} beat ${nameOf(loser)} ${fmt(Math.max(g.a.pts, g.b.pts))}–${fmt(Math.min(g.a.pts, g.b.pts))} for the title` });
+        }
+        if (g.type === "sacko" && g.winner) {
+          const shitter = g.winner === g.a.uid ? g.b.uid : g.a.uid;
+          cand.push({ pri: 1, icon: "💩", text: `${nameOf(shitter)} sealed the Shitter, falling to ${nameOf(g.winner)} in the Shitter Bowl` });
+        }
+        let rk = rankIn(R.highScores, x => x.uid === hi.uid && x.season === s && x.week === wk && Math.abs(x.pts - hi.pts) < 0.01);
+        if (rk) cand.push({ pri: 2, icon: "🔥", text: `${nameOf(hi.uid)} hung ${fmt(hi.pts)} on ${nameOf(lo.uid)} — still the #${rk} score in league history` });
+        rk = rankIn(R.lowScores, x => x.uid === lo.uid && x.season === s && x.week === wk && Math.abs(x.pts - lo.pts) < 0.01);
+        if (rk) cand.push({ pri: 3, icon: "🥶", text: `${nameOf(lo.uid)} managed just ${fmt(lo.pts)} — the #${rk} lowest score ever` });
+        rk = rankIn(R.blowouts, x => x.season === s && x.week === wk && Math.abs(x.margin - margin) < 0.01);
+        if (rk) cand.push({ pri: 4, icon: "💥", text: `${nameOf(hi.uid)} blew out ${nameOf(lo.uid)} by ${fmt(margin)} — the #${rk} beatdown of all time` });
+        rk = rankIn(R.nailbiters, x => x.season === s && x.week === wk && Math.abs(x.margin - margin) < 0.01);
+        if (rk) cand.push({ pri: 5, icon: "😅", text: `${nameOf(hi.uid)} survived ${nameOf(lo.uid)} by ${fmt(margin)} — the #${rk} closest game ever` });
+        cand.forEach(c => { if (!best || c.pri < best.pri) best = c; });
+      });
+      if (!best) {
+        const top = games.flatMap(g => [g.a, g.b]).sort((a, b) => b.pts - a.pts)[0];
+        best = { icon: "🏈", text: `${nameOf(top.uid)} led the week with ${fmt(top.pts)}` };
+      }
+      items.push(`<li><span class="wi">${best.icon}</span> <b>${s}:</b> ${esc(best.text)}</li>`);
+    });
+    if (!items.length) return "";
+    return `<div class="card"><h2>This Week in League History <span class="tag">week ${wk}, through the years</span></h2>
+      <ul class="watch">${items.join("")}</ul></div>`;
   }
 
   /* ---------- STANDINGS ---------- */
@@ -1051,6 +1144,93 @@
       <p class="footnote">Don't know your PIN? Ask the commissioner. Picks are hidden from everyone until the week locks.</p>`;
   }
 
+  /* ---------- SEASON PREVIEW MAGAZINE ---------- */
+  function vPreview() {
+    loadTradeValues(); // market values enrich the capsules once loaded
+    const lastS = D.completeSeasons[D.completeSeasons.length - 1];
+    const active = currentStandings().map(s => s.uid);
+    const eloMap = {}; ((E.elo || {}).table || []).forEach(r => eloMap[r.uid] = r.elo);
+    const tm = TF.loaded ? tradeModel() : null;
+    const val = u => tm ? tm.teams[u].total : 0;
+
+    /* composite outlook: Elo (proven quality) + market value (roster talent) */
+    const zs = arr => {
+      const m = arr.reduce((a, b) => a + b, 0) / arr.length;
+      const sd = Math.sqrt(arr.reduce((s, x) => s + (x - m) ** 2, 0) / arr.length) || 1;
+      return x => (x - m) / sd;
+    };
+    const zE = zs(active.map(u => eloMap[u] || 1500));
+    const zV = tm ? zs(active.map(val)) : null;
+    const comp = {}; active.forEach(u => { comp[u] = zE(eloMap[u] || 1500) + (zV ? zV(val(u)) : 0); });
+    const order = active.slice().sort((a, b) => comp[b] - comp[a]);
+    const cm = order.reduce((s, u) => s + comp[u], 0) / order.length;
+    const winsOf = u => Math.max(3, Math.min(11, Math.round((7 + (comp[u] - cm) * 1.6) * 2) / 2));
+    const ex = order.map(u => Math.exp(comp[u] * 0.55));
+    const sx = ex.reduce((a, b) => a + b, 0);
+    const oddsOf = {}; order.forEach((u, i) => { oddsOf[u] = ex[i] / sx; });
+    const vRank = {}; active.slice().sort((a, b) => val(b) - val(a)).forEach((u, i) => { vRank[u] = i + 1; });
+    const ages = tm ? active.map(u => tm.teams[u].wAge) : [];
+    const aMin = Math.min(...ages), aMax = Math.max(...ages);
+
+    const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+    const blurb = u => {
+      const st = D.seasonsData[lastS].standings.find(x => x.uid === u);
+      const bits = [];
+      if (st) {
+        if (st.place === 1) bits.push(`the defending champs run it back`);
+        else if (st.place === 8) bits.push(`fresh off the Shitter, there is nowhere to go but up`);
+        else if (st.place <= 3) bits.push(`coming off a ${ordinal(st.place)}-place finish at ${st.wins}-${st.losses}, the window is open`);
+        else bits.push(`last year's ${st.wins}-${st.losses} campaign ended in ${ordinal(st.place)} — this roster wants more`);
+      }
+      const cs = (D.currentStreaks || {})[u];
+      if (cs && cs.n >= 3) bits.push(cs.kind === "W" ? `they carry a ${cs.n}-game win streak into the opener` : `they need to snap a ${cs.n}-game skid first`);
+      if (tm) {
+        const t = tm.teams[u];
+        const spec = aMax > aMin ? (t.wAge - aMin) / (aMax - aMin) : 0.5;
+        bits.push(`the market ranks this the #${vRank[u]} asset base in the league${spec > 0.65 ? " — built to win right now" : spec < 0.35 ? " — young and still compounding" : ""}`);
+        if (t.trend >= 800) bits.push(`the arrow points up: +${fmt(t.trend, 0)} in market value over the last 30 days`);
+        else if (t.trend <= -800) bits.push(`the market has cooled on them lately (${fmt(t.trend, 0)} in 30 days)`);
+        if (t.players[0]) bits.push(`everything routes through ${t.players[0].name}`);
+      }
+      const nem = Object.entries(D.h2h[u] || {})
+        .map(([o, r]) => ({ o, w: r.w + r.pw, l: r.l + r.pl }))
+        .filter(x => x.w + x.l >= 5 && active.includes(x.o) && x.l > x.w)
+        .sort((a, b) => (a.w / (a.w + a.l)) - (b.w / (b.w + b.l)))[0];
+      if (nem) bits.push(`the boogeyman remains ${nameOf(nem.o)} (${nem.w}-${nem.l} lifetime)`);
+      return bits.map(cap).join(". ") + ".";
+    };
+
+    const capsule = (u, i) => {
+      const rookies = (D.drafts[D.currentSeason] || []).flatMap(b => b.picks).filter(p => p.uid === u).slice(0, 2).map(p => p.player);
+      const trades = (E.trades || []).filter(t => t.season === D.currentSeason && t.sides.some(s => s.uid === u)).length;
+      const moves = [rookies.length ? `drafted ${rookies.join(" & ")}` : "", trades ? `${trades} trade${trades > 1 ? "s" : ""} made` : ""].filter(Boolean).join(" · ");
+      return `<div class="card">
+        <h2>#${i + 1} · ${esc(teamOf(u, D.currentSeason))} <span class="tag">${esc(nameOf(u))}</span></h2>
+        <p class="note" style="margin-top:4px">O/U <b>${winsOf(u)}</b> wins · title odds <b>${pct(oddsOf[u])}</b> · Elo ${fmt(eloMap[u] || 1500, 0)}${tm ? ` · roster value ${fmt(val(u), 0)}` : ""}</p>
+        <p style="margin:10px 0 6px;color:var(--ink-2)">${esc(blurb(u))}</p>
+        ${moves ? `<p class="note">Offseason: ${esc(moves)}</p>` : ""}
+      </div>`;
+    };
+
+    const maxOdds = Math.max(...order.map(u => oddsOf[u]));
+    return `
+      <div class="card">
+        <h2>The ${esc(D.currentSeason)} Season Preview <span class="tag">auto-written from Elo, market values, streaks &amp; history</span></h2>
+        <p class="note">Projected order blends each team's all-time Elo with its current dynasty-market roster value. Win totals are over/unders on a 14-game season — argue accordingly.</p>
+        <div class="table-scroll"><table>
+        <tr><th></th><th>Team</th><th class="num">O/U Wins</th><th class="num">Title Odds</th><th style="min-width:140px"></th></tr>
+        ${order.map((u, i) => `<tr class="me-row"><td class="rank-cell">${i + 1}</td>
+          <td>${mgrChip(u, { label: teamOf(u, D.currentSeason), sub: nameOf(u) })}</td>
+          <td class="num"><b>${winsOf(u)}</b></td>
+          <td class="num">${pct(oddsOf[u])}</td>
+          <td><div class="ibar"><div class="track"><div class="fill" style="width:${(oddsOf[u] / maxOdds * 100).toFixed(1)}%;background:${colorOf(u)}"></div></div></div></td></tr>`).join("")}
+        </table></div>
+        ${tm ? "" : '<p class="note">Pricing rosters — market values loading…</p>'}
+      </div>
+      <div class="grid cols-2">${order.map(capsule).join("")}</div>
+      <p class="footnote">Every word generated from league data: Elo ratings, FantasyCalc dynasty values, active streaks, head-to-head history, and this offseason's moves. Nobody wrote your capsule — the numbers did.</p>`;
+  }
+
   /* ---------- ELO RATINGS ---------- */
   function vElo() {
     const el = E.elo;
@@ -1347,9 +1527,9 @@
             age: r.player.maybeAge, posRank: r.positionRank, trend: r.trend30Day || 0 };
         });
         TF.loaded = true; TF.pending = false;
-        if (state.view === "tradefinder") render();
+        if (state.view === "tradefinder" || state.view === "preview") render();
       })
-      .catch(() => { TF.failed = true; TF.pending = false; if (state.view === "tradefinder") render(); });
+      .catch(() => { TF.failed = true; TF.pending = false; if (state.view === "tradefinder" || state.view === "preview") render(); });
   }
 
   const TF_POS = ["QB", "RB", "WR", "TE"];
