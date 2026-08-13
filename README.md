@@ -17,7 +17,7 @@ A full stats website for the Los Banditos dynasty fantasy football league (Sleep
 - **Trophy Room** — championship banners with full title lineups (plaques), career hardware, season finishes, and drawn playoff brackets
 - **Shame Wall** — Shitter tracker, worst weeks, worst blowout losses, longest skids
 - **Drafts** — every draft board (2023 startup + rookie drafts), steals/busts, traded-pick "via" tags, and the future pick ledger
-- **Trade Finder** (Moves tab) — live trade-compatibility matrix: every roster priced with FantasyCalc dynasty market values (1QB/8-team/PPR), positional surplus vs. need per team, win-now vs. rebuilding timelines, 30-day value trends, top trade bait, and auto-suggested value-balanced swaps for the best-fitting pairs
+- **Trade Finder** (Moves tab) — live trade-compatibility matrix: every roster priced with FantasyCalc dynasty market values (1QB/8-team/PPR), positional surplus vs. need per team, win-now vs. rebuilding timelines, 30-day value trends, top trade bait, auto-suggested value-balanced swaps for the best-fitting pairs, and a market-inefficiency board (win-now vs. dynasty price: buy-low vets and sellable future premiums, flagged against each owner's timeline)
 
 - **Pick'em & Poll** (Season tab) — weekly winner picks and a rank-the-league power poll, submitted right on the site with per-manager PINs. Locks at Thursday kickoff; crowd percentages and a season leaderboard after lock. Backend: Cloudflare Worker + KV in `worker/` (deploy with `npx wrangler deploy`; PINs live in the `PINS` secret).
 

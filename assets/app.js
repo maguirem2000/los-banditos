@@ -1259,8 +1259,8 @@
         rows.forEach(r => {
           const sid = r.player && r.player.sleeperId;
           if (!sid) return;
-          TF.val[sid] = { v: r.value, name: r.player.name, pos: r.player.position, age: r.player.maybeAge,
-            posRank: r.positionRank, trend: r.trend30Day || 0 };
+          TF.val[sid] = { v: r.value, rv: r.redraftValue || r.value, name: r.player.name, pos: r.player.position,
+            age: r.player.maybeAge, posRank: r.positionRank, trend: r.trend30Day || 0 };
         });
         TF.loaded = true; TF.pending = false;
         if (state.view === "tradefinder") render();
@@ -1279,7 +1279,7 @@
       const players = (r.players || []).map(pid => {
         const fc = TF.val[pid];
         return { pid, pos: fc ? fc.pos : ppos(pid), name: fc ? fc.name : pname(pid),
-          v: fc ? fc.v : 0, age: fc ? fc.age : null, trend: fc ? fc.trend : 0, posRank: fc ? fc.posRank : null };
+          v: fc ? fc.v : 0, rv: fc ? fc.rv : 0, age: fc ? fc.age : null, trend: fc ? fc.trend : 0, posRank: fc ? fc.posRank : null };
       }).filter(p => TF_POS.includes(p.pos)).sort((a, b) => b.v - a.v);
       /* starters = best lineup by market value: 1QB 2RB 2WR 1TE + 3 flex */
       const starters = new Set();
@@ -1431,7 +1431,40 @@
         ${board}
         </table></div>
         <p class="note" style="margin-top:8px">Surplus/needs compare each team’s best starting lineup and bench depth to the league median at every position. “Trade bait” = the most valuable piece a team can deal from strength.</p></div>
-      <p class="footnote">Market values: FantasyCalc dynasty (1QB · 8-team · PPR), refreshed on every page load. 30-Day = roster-wide value trend. K/DEF excluded.</p>`;
+      ${inefficiencyCards(m, aMin, aMax)}
+      <p class="footnote">Market values: FantasyCalc dynasty (1QB · 8-team · PPR), refreshed on every page load. Win-Now = FantasyCalc redraft value, same format. 30-Day = roster-wide value trend. K/DEF excluded.</p>`;
+  }
+
+  /* win-now (redraft) price vs dynasty price — market inefficiencies on league rosters */
+  function inefficiencyCards(m, aMin, aMax) {
+    const specOf = u => aMax > aMin ? (m.teams[u].wAge - aMin) / (aMax - aMin) : 0.5;
+    const allP = [];
+    m.uids.forEach(u => m.teams[u].players.forEach(x => { if (Math.max(x.v, x.rv) >= 1200) allP.push({ ...x, uid: u }); }));
+    const vets = allP.filter(p => p.rv > p.v).sort((a, b) => (b.rv - b.v) - (a.rv - a.v)).slice(0, 8);
+    const futures = allP.filter(p => p.v > p.rv).sort((a, b) => (b.v - b.rv) - (a.v - a.rv)).slice(0, 8);
+    if (!vets.length && !futures.length) return "";
+    const table = (rows, kind) => `<div class="table-scroll"><table>
+      <tr><th>Player</th><th>Owner</th><th class="num">Dynasty</th><th class="num">Win-Now</th><th class="num">Gap</th><th></th></tr>
+      ${rows.map(p => {
+        const spec = specOf(p.uid);
+        const flag = kind === "vet"
+          ? (spec < 0.4 ? '<span class="pill sacko">SHOULD SELL</span>' : "")
+          : (spec > 0.6 ? '<span class="pill champ">COULD CASH IN</span>' : "");
+        const gap = kind === "vet" ? p.rv - p.v : p.v - p.rv;
+        return `<tr class="me-row"><td>${tfName(p)} <small style="color:var(--muted)">${esc(p.pos)}${p.age ? " · " + fmt(p.age, 0) + "y" : ""}</small></td>
+          <td>${mgrChip(p.uid)}</td>
+          <td class="num">${fmt(p.v, 0)}</td><td class="num">${fmt(p.rv, 0)}</td>
+          <td class="num"><b style="color:${kind === "vet" ? "var(--gold-bright)" : "var(--aqua)"}">+${fmt(gap, 0)}</b></td>
+          <td>${flag}</td></tr>`;
+      }).join("")}</table></div>`;
+    return `<div style="height:18px"></div><div class="grid cols-2">
+      <div class="card"><h2>Win-Now Bargains <span class="tag">worth more this season than their dynasty price</span></h2>
+        <p class="note">Aging producers the market discounts for tomorrow. Contenders should be buying these low — and any rebuilder still holding one is sitting on a depreciating asset.</p>
+        ${table(vets, "vet")}</div>
+      <div class="card"><h2>Future Premiums <span class="tag">dynasty price far above this-season value</span></h2>
+        <p class="note">The youth-and-upside tax. A win-now team can flip these for immediate help at full sticker price — rebuilders pay it gladly.</p>
+        ${table(futures, "future")}</div>
+    </div>`;
   }
 
   function openTradePair(a, b) {
