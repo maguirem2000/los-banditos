@@ -64,6 +64,7 @@
       LIVE.loaded = true;
       if (GD_SIM) { LIVE.seasonActive = true; simScores(LIVE.week); }
       render(); // refresh whatever view is open with live numbers
+      maybeTakePrompt();
     } catch (e) {
       LIVE.failed = true;
       console.warn("Live Sleeper fetch failed; using baked data", e);
@@ -114,6 +115,7 @@
     power: { label: "Power Rankings", render: vPower },
     picks: { label: "Pick'em & Poll", render: vPicks },
     preview: { label: "Season Preview", render: vPreview },
+    takes: { label: "Hot Takes", render: vTakes },
     franchises: { label: "Franchises", render: vFranchise },
     elo: { label: "Elo Ratings", render: vElo },
     players: { label: "Passports", render: vPlayers },
@@ -128,7 +130,7 @@
   /* nav groups: 6 top-level sections, sub-pages as pills */
   const GROUPS = [
     { label: "Home", views: { home: "Home" } },
-    { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds", picks: "Pick'em & Poll", preview: "Season Preview" } },
+    { label: "Season", views: { standings: "Standings", schedule: "Schedule", power: "Power & Odds", picks: "Pick'em & Poll", takes: "Hot Takes", preview: "Season Preview" } },
     { label: "History", views: { records: "Record Book", h2h: "Head-to-Head", elo: "Elo Ratings", awards: "Awards", players: "Passports" } },
     { label: "Teams", views: { franchises: "Franchise Pages", bench: "Boneheads" } },
     { label: "Moves", views: { trades: "Trades & Waivers", tradefinder: "Trade Finder", drafts: "Drafts" } },
@@ -450,6 +452,10 @@
       </div>
 
       ${liveRecordsWatch()}
+
+      ${htHomeCard()}
+
+      ${wyrCard()}
 
       ${(E.recordsWatch || []).length ? `<div class="card"><h2>Records Watch <span class="tag">storylines heading into ${esc(D.currentSeason)}</span></h2>
         <ul class="watch">${E.recordsWatch.map(w => `<li><span class="wi">${w.icon}</span> ${esc(w.text)}</li>`).join("")}</ul></div>` : ""}
@@ -997,7 +1003,7 @@
   }
 
   /* ---------- PICK'EM & POWER POLL ---------- */
-  const PICKS_API = "https://banditos-picks.lbffl.workers.dev";
+  const PICKS_API = /[?&]devapi/.test(location.search) ? "http://localhost:8787" : "https://banditos-picks.lbffl.workers.dev";
   const pk = { week: null, sel: {}, poll: null, subs: null, season: null, msg: "", sending: false };
 
   const gameKey = g => [g.a.uid, g.b.uid].sort().join("|");
@@ -1142,6 +1148,295 @@
       </div>
       ${leader}
       <p class="footnote">Don't know your PIN? Ask the commissioner. Picks are hidden from everyone until the week locks.</p>`;
+  }
+
+  /* ---------- HOT TAKES ---------- */
+  const HT = { pending: false, loaded: false, failed: false, takes: [], reacts: {}, grades: {}, gradeThrough: -1 };
+  const htWeek = () => (LIVE.loaded ? LIVE.week : 1);
+  const htVotes = (map, week, takeUid) => Object.values(map[`${week}:${takeUid}`] || {});
+  const htMyVote = (map, week, takeUid) => {
+    const me = myIdentity();
+    return me ? (map[`${week}:${takeUid}`] || {})[me.uid] || null : null;
+  };
+
+  async function loadTakes(force) {
+    if (HT.pending || (HT.loaded && !force)) return;
+    HT.pending = true;
+    try {
+      const j = await fetch(`${PICKS_API}/takes?season=${D.currentSeason}`).then(r => r.json());
+      if (!Array.isArray(j.takes)) throw new Error("backend has no /takes yet"); // old worker — stay hidden
+      HT.takes = j.takes; HT.reacts = j.reacts || {}; HT.grades = j.grades || {};
+      HT.gradeThrough = j.gradeableThroughWeek ?? -1;
+      HT.loaded = true; HT.failed = false;
+    } catch (e) { HT.failed = true; }
+    HT.pending = false;
+    maybeTakePrompt();
+    if (state.view === "home" || state.view === "takes") render();
+  }
+
+  /* the on-open prompt: once per browser session, until this week's take is filed */
+  function maybeTakePrompt() {
+    if (!HT.loaded || !LIVE.loaded) return;
+    if (sessionStorage.getItem("ht_prompted")) return;
+    const me = myIdentity();
+    if (me && HT.takes.some(t => t.uid === me.uid && t.week === htWeek())) return;
+    if (document.querySelector(".modal-back")) return;
+    sessionStorage.setItem("ht_prompted", "1");
+    openTakeModal();
+  }
+
+  function openTakeModal() {
+    const me = myIdentity();
+    const wk = htWeek();
+    const mine = me ? HT.takes.find(t => t.uid === me.uid && t.week === wk) : null;
+    const active = currentStandings().map(s => s.uid);
+    const whoOpts = active.map(u => `<option value="${esc(u)}" ${me && me.uid === u ? "selected" : ""}>${esc(nameOf(u))}</option>`).join("");
+    showModal(`
+      <button class="close" data-close>×</button>
+      <h3>🌶️ Hot Take of the Week <small style="color:var(--muted);font-weight:400">week ${wk}</small></h3>
+      <p class="note">Drop your football or fantasy take. It posts instantly for the whole league and is editable until Thursday kickoff — then it's on the record, and three weeks later the league grades it 🍷 or 🥛.</p>
+      <textarea id="ht-text" maxlength="280" rows="3" placeholder="The spicier the better…"
+        style="width:100%;background:var(--surface-2);color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-family:inherit;font-size:14px;resize:vertical">${mine ? esc(mine.text) : ""}</textarea>
+      <div class="controls" style="margin-top:10px">
+        <label>I am</label><select id="ht-who">${whoOpts}</select>
+        <input id="ht-pin" type="password" inputmode="numeric" placeholder="PIN" value="${me ? esc(me.pin) : ""}"
+          style="background:var(--surface-2);color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:7px 10px;width:80px;font-family:inherit">
+        <button class="btn on" id="ht-submit">${mine ? "Update take" : "Post it"}</button>
+        <span class="note" style="margin:0" id="ht-msg"></span>
+      </div>`);
+  }
+
+  async function submitTake() {
+    const text = ($("#ht-text")?.value || "").trim();
+    const uid = $("#ht-who")?.value, pin = ($("#ht-pin")?.value || "").trim();
+    const say = m => { const el = $("#ht-msg"); if (el) el.textContent = m; };
+    if (text.length < 3) { say("Type an actual take first."); return; }
+    if (!uid || !pin) { say("Pick who you are and enter your PIN."); return; }
+    say("Sending…");
+    try {
+      const r = await fetch(`${PICKS_API}/take`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid, pin, season: D.currentSeason, week: htWeek(), text }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        localStorage.setItem("banditos_id", JSON.stringify({ uid, pin }));
+        closeModal();
+        loadTakes(true);
+      } else say("✗ " + (j.error || "failed"));
+    } catch (e) { say("✗ network error"); }
+  }
+
+  async function voteTake(kind, week, takeUid, vote) {
+    const me = myIdentity();
+    if (!me) { openTakeModal(); return; } // no identity yet — the take modal saves one
+    try {
+      const r = await fetch(`${PICKS_API}/${kind === "grade" ? "grade" : "react"}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: me.uid, pin: me.pin, season: D.currentSeason, week: Number(week), takeUid, vote }),
+      });
+      const j = await r.json();
+      if (j.ok) loadTakes(true);
+      else console.warn("vote failed:", j.error);
+    } catch (e) { console.warn("vote failed", e); }
+  }
+
+  function takeCard(t) {
+    const rs = htVotes(HT.reacts, t.week, t.uid);
+    const fire = rs.filter(v => v === "fire").length, trash = rs.filter(v => v === "trash").length;
+    const myR = htMyVote(HT.reacts, t.week, t.uid);
+    const me = myIdentity();
+    const own = me && me.uid === t.uid;
+    let gradeHtml = "";
+    if (t.week <= HT.gradeThrough) {
+      const gs = htVotes(HT.grades, t.week, t.uid);
+      const wine = gs.filter(v => v === "wine").length, milk = gs.filter(v => v === "milk").length;
+      const myG = htMyVote(HT.grades, t.week, t.uid);
+      const verdict = wine + milk >= 3
+        ? (wine > milk ? '<span class="pill champ">🍷 AGED LIKE WINE</span>' : milk > wine ? '<span class="pill sacko">🥛 AGED LIKE MILK</span>' : "")
+        : "";
+      gradeHtml = `<div class="take-actions">
+        <button class="btn tiny ${myG === "wine" ? "on" : ""}" data-grade="${t.week}|${esc(t.uid)}|wine">🍷 ${wine}</button>
+        <button class="btn tiny ${myG === "milk" ? "on" : ""}" data-grade="${t.week}|${esc(t.uid)}|milk">🥛 ${milk}</button>
+        ${verdict}</div>`;
+    }
+    return `<div class="take">
+      <div class="take-head">${mgrChip(t.uid)} <small style="color:var(--muted)">week ${t.week}</small></div>
+      <div class="take-text">“${esc(t.text)}”</div>
+      <div class="take-actions">
+        <button class="btn tiny ${myR === "fire" ? "on" : ""}" data-react="${t.week}|${esc(t.uid)}|fire" ${own ? 'disabled title="no self-hype"' : ""}>🔥 ${fire}</button>
+        <button class="btn tiny ${myR === "trash" ? "on" : ""}" data-react="${t.week}|${esc(t.uid)}|trash" ${own ? "disabled" : ""}>🗑️ ${trash}</button>
+      </div>
+      ${gradeHtml}
+    </div>`;
+  }
+
+  function htHomeCard() {
+    if (!HT.loaded) return "";
+    const wk = htWeek();
+    const weekTakes = HT.takes.filter(t => t.week === wk);
+    const me = myIdentity();
+    const minePosted = me && weekTakes.some(t => t.uid === me.uid);
+    return `<div class="card"><h2>🌶️ Hot Takes <span class="tag">week ${wk} · ${weekTakes.length}/8 filed · <a href="#/takes">archive &amp; grades →</a></span></h2>
+      ${weekTakes.length ? `<div class="takes-grid">${weekTakes.map(takeCard).join("")}</div>` : '<p class="note">Nobody has said anything reckless yet this week. Be first.</p>'}
+      ${minePosted ? "" : `<div class="controls" style="margin-top:12px"><button class="btn on" id="ht-open">🌶️ Drop your week ${wk} take</button></div>`}
+    </div>`;
+  }
+
+  function vTakes() {
+    if (!HT.loaded) {
+      loadTakes();
+      return HT.failed
+        ? '<div class="card"><h2>Hot Takes</h2><p class="note">The takes backend isn’t reachable — worker not deployed yet, or you’re offline.</p></div>'
+        : '<div class="card"><p class="note">Loading takes…</p></div>';
+    }
+    const wk = htWeek();
+    /* Nostradamus standings: net 🍷 minus 🥛 across all graded takes */
+    const byAuthor = {};
+    HT.takes.forEach(t => {
+      const gs = htVotes(HT.grades, t.week, t.uid);
+      const a = (byAuthor[t.uid] = byAuthor[t.uid] || { takes: 0, wine: 0, milk: 0 });
+      a.takes++;
+      a.wine += gs.filter(v => v === "wine").length;
+      a.milk += gs.filter(v => v === "milk").length;
+    });
+    const lb = Object.entries(byAuthor).filter(([, a]) => a.wine + a.milk > 0)
+      .sort((x, y) => (y[1].wine - y[1].milk) - (x[1].wine - x[1].milk));
+    const lbCard = lb.length ? `<div class="card"><h2>Nostradamus Standings <span class="tag">net 🍷 across every graded take</span></h2>
+      <div class="table-scroll"><table>
+      <tr><th></th><th>Manager</th><th class="num">Takes</th><th class="num">🍷</th><th class="num">🥛</th><th class="num">Net</th></tr>
+      ${lb.map(([u, a], i) => `<tr class="me-row"><td class="rank-cell">${i + 1}</td>
+        <td>${mgrChip(u)}${i === 0 && a.wine > a.milk ? ' <span class="pill champ">🔮 NOSTRADAMUS</span>' : i === lb.length - 1 && lb.length > 1 && a.milk > a.wine ? ' <span class="pill sacko">🤡 CLOWN</span>' : ""}</td>
+        <td class="num">${a.takes}</td><td class="num">${a.wine}</td><td class="num">${a.milk}</td>
+        <td class="num" style="color:${a.wine - a.milk >= 0 ? "var(--good)" : "var(--red)"}"><b>${a.wine - a.milk >= 0 ? "+" : ""}${a.wine - a.milk}</b></td></tr>`).join("")}
+      </table></div></div>` : "";
+    const pastWeeks = [...new Set(HT.takes.filter(t => t.week !== wk).map(t => t.week))].sort((a, b) => b - a);
+    const me = myIdentity();
+    const weekTakes = HT.takes.filter(t => t.week === wk);
+    const minePosted = me && weekTakes.some(t => t.uid === me.uid);
+    return `
+      <div class="card"><h2>🌶️ Hot Takes — Week ${wk}</h2>
+        <p class="note">One take per manager per week. Editable until Thursday kickoff, then it’s on the record — and three weeks later the league votes 🍷 aged-like-wine or 🥛 aged-like-milk.</p>
+        ${weekTakes.length ? `<div class="takes-grid">${weekTakes.map(takeCard).join("")}</div>` : '<p class="note">No takes filed yet.</p>'}
+        ${minePosted ? "" : `<div class="controls" style="margin-top:12px"><button class="btn on" id="ht-open">🌶️ Drop your take</button></div>`}
+      </div>
+      ${wyrCard()}
+      ${lbCard}
+      ${pastWeeks.map(w => `<div class="card"><h2>Week ${w} <span class="tag">${w <= HT.gradeThrough ? "grading open — how did these age?" : "on the record · grading opens week " + (w + 3)}</span></h2>
+        <div class="takes-grid">${HT.takes.filter(t => t.week === w).map(takeCard).join("")}</div></div>`).join("")}
+      <p class="footnote">Reactions and grades are one vote per manager, signed with your Pick'em PIN. You can’t 🔥 your own take. A take needs 3+ grades for an official verdict.</p>`;
+  }
+
+  /* ---------- WHO YA RATHER (weekly player poll) ---------- */
+  const WYR = { pending: false, loaded: false, failed: false, seeding: false, pairs: {}, votes: {} };
+
+  async function loadWyr(force) {
+    if (WYR.pending || (WYR.loaded && !force)) return;
+    WYR.pending = true;
+    try {
+      const j = await fetch(`${PICKS_API}/wyr?season=${D.currentSeason}`).then(r => r.json());
+      if (!j.pairs || !j.votes) throw new Error("backend has no /wyr yet");
+      WYR.pairs = j.pairs; WYR.votes = j.votes;
+      WYR.loaded = true; WYR.failed = false;
+    } catch (e) { WYR.failed = true; }
+    WYR.pending = false;
+    ensureWyrPairs();
+    if (state.view === "home" || state.view === "takes") render();
+  }
+
+  /* deterministic-ish weekly pairs: close in market value (±5-ish rank spots), mostly same position */
+  function wyrGenerate(week) {
+    const pool = Object.entries(TF.val).map(([sid, p]) => ({ sid, ...p }))
+      .filter(p => TF_POS.includes(p.pos) && p.v > 0)
+      .sort((a, b) => b.v - a.v).slice(0, 80);
+    const cands = [];
+    for (let i = 0; i < pool.length; i++) {
+      for (let j = i + 1; j <= i + 6 && j < pool.length; j++) {
+        const a = pool[i], b = pool[j];
+        if (b.v / a.v < 0.85) continue; // keep it close — no Puka vs DeVonta
+        cands.push({ a, b, samePos: a.pos === b.pos });
+      }
+    }
+    let h = 0;
+    const seedStr = `${D.currentSeason}-wyr-${week}`;
+    for (let i = 0; i < seedStr.length; i++) h = (Math.imul(h, 31) + seedStr.charCodeAt(i)) | 0;
+    const rand = () => {
+      h = (h + 0x6D2B79F5) | 0;
+      let t = Math.imul(h ^ (h >>> 15), 1 | h);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const chosen = [], used = new Set();
+    const pick = list => {
+      const l = list.filter(c => !used.has(c.a.sid) && !used.has(c.b.sid));
+      if (!l.length) return;
+      const c = l[Math.floor(rand() * l.length)];
+      chosen.push([c.a.sid, c.b.sid]); used.add(c.a.sid); used.add(c.b.sid);
+    };
+    pick(cands.filter(c => c.samePos));
+    pick(cands.filter(c => c.samePos));
+    pick(cands);
+    return chosen;
+  }
+
+  /* first visitor of the week seeds the pairs; the worker keeps the first write so everyone votes the same poll */
+  async function ensureWyrPairs() {
+    if (!WYR.loaded || !TF.loaded || !LIVE.loaded || WYR.seeding) return;
+    const wk = htWeek();
+    if (WYR.pairs[String(wk)]) return;
+    const pairs = wyrGenerate(wk);
+    if (!pairs.length) return;
+    WYR.seeding = true;
+    try {
+      const j = await fetch(`${PICKS_API}/wyrpairs`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ season: D.currentSeason, week: wk, pairs }),
+      }).then(r => r.json());
+      if (j.pairs) { WYR.pairs[String(wk)] = j.pairs; if (state.view === "home" || state.view === "takes") render(); }
+    } catch (e) { /* next load retries */ }
+    WYR.seeding = false;
+  }
+
+  async function wyrVote(week, pairKey, pick) {
+    const me = myIdentity();
+    if (!me) { openTakeModal(); return; } // saves an identity we can sign votes with
+    try {
+      const j = await fetch(`${PICKS_API}/wyrvote`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: me.uid, pin: me.pin, season: D.currentSeason, week: Number(week), pairKey, pick }),
+      }).then(r => r.json());
+      if (j.ok) loadWyr(true);
+      else console.warn("wyr vote failed:", j.error);
+    } catch (e) { console.warn("wyr vote failed", e); }
+  }
+
+  function wyrCard() {
+    if (!WYR.loaded || !TF.loaded) return "";
+    const wk = htWeek();
+    const pairs = WYR.pairs[String(wk)];
+    if (!pairs || !pairs.length) return "";
+    const me = myIdentity();
+    const rows = pairs.map(([a, b]) => {
+      const pairKey = `${a}|${b}`;
+      const votes = WYR.votes[`${wk}:${pairKey}`] || {};
+      const myPick = me ? votes[me.uid] : null;
+      const n = Object.keys(votes).length;
+      const side = sid => {
+        const p = TF.val[sid] || { name: "#" + sid, pos: "", team: "", age: null };
+        const cnt = Object.values(votes).filter(v => v === sid).length;
+        const pctv = n ? Math.round(cnt / n * 100) : 0;
+        const on = myPick === sid;
+        return `<button class="wyr-side ${on ? "on" : ""}" data-wyr="${wk}|${esc(pairKey)}|${esc(sid)}">
+          <span class="wyr-name">${esc(p.name)}</span>
+          <span class="wyr-sub">${esc(p.pos)}${p.team ? " · " + esc(p.team) : ""}${p.age ? " · " + Math.round(p.age) + "y" : ""}</span>
+          ${myPick ? `<span class="wyr-pct">${pctv}%</span><span class="wyr-bar"><span style="width:${pctv}%"></span></span>` : ""}
+        </button>`;
+      };
+      return `<div class="wyr-row">${side(a)}<span class="wyr-or">or</span>${side(b)}
+        <div class="wyr-meta">${myPick ? `${n} vote${n === 1 ? "" : "s"} in` : n ? `${n} voted — pick a side to see the split` : "no votes yet — set the tone"}</div></div>`;
+    }).join("");
+    return `<div class="card"><h2>🤔 Who Ya Rather <span class="tag">week ${wk} · dynasty, this league's format · results after you vote</span></h2>
+      <div class="wyr-grid">${rows}</div></div>`;
   }
 
   /* ---------- SEASON PREVIEW MAGAZINE ---------- */
@@ -1524,10 +1819,11 @@
           const sid = r.player && r.player.sleeperId;
           if (!sid) return;
           TF.val[sid] = { v: r.value, rv: r.redraftValue || r.value, name: r.player.name, pos: r.player.position,
-            age: r.player.maybeAge, posRank: r.positionRank, trend: r.trend30Day || 0 };
+            age: r.player.maybeAge, team: r.player.maybeTeam || "", posRank: r.positionRank, trend: r.trend30Day || 0 };
         });
         TF.loaded = true; TF.pending = false;
-        if (state.view === "tradefinder" || state.view === "preview") render();
+        ensureWyrPairs();
+        if (["tradefinder", "preview", "home", "takes"].includes(state.view)) render();
       })
       .catch(() => { TF.failed = true; TF.pending = false; if (state.view === "tradefinder" || state.view === "preview") render(); });
   }
@@ -2119,6 +2415,22 @@
     if (cell) { const [a, b] = cell.dataset.h2h.split("|"); openH2HLog(a, b); return; }
     const tfp = e.target.closest("[data-tfpair]");
     if (tfp) { const [a, b] = tfp.dataset.tfpair.split("|"); openTradePair(a, b); return; }
+    const rc = e.target.closest("[data-react]");
+    if (rc && !rc.disabled) {
+      const [w, tu, v] = rc.dataset.react.split("|");
+      voteTake("react", w, tu, htMyVote(HT.reacts, Number(w), tu) === v ? null : v);
+      return;
+    }
+    const gr = e.target.closest("[data-grade]");
+    if (gr) { const [w, tu, v] = gr.dataset.grade.split("|"); voteTake("grade", w, tu, v); return; }
+    if (e.target.id === "ht-open") { openTakeModal(); return; }
+    if (e.target.id === "ht-submit") { submitTake(); return; }
+    const wy = e.target.closest("[data-wyr]");
+    if (wy) {
+      const p = wy.dataset.wyr.split("|"); // "week|sidA|sidB|pick"
+      wyrVote(p[0], p[1] + "|" + p[2], p[3]);
+      return;
+    }
     const wk = e.target.closest("[data-week]");
     if (wk) { state.week = +wk.dataset.week; state.weekTouched = true; render(); return; }
     const pick = e.target.closest("[data-pick]");
@@ -2165,4 +2477,7 @@
     `Dynasty · ${D.seasons.length} seasons · est. ${D.seasons[0]} · updated ${D.generatedAt}`;
   nav();
   loadLive();
+  loadTakes();
+  loadWyr();
+  loadTradeValues(); // market values power the home-page poll + trade tools
 })();

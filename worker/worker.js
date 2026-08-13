@@ -9,10 +9,18 @@
  *   POST /submit                 {uid, pin, season, week, picks, poll}
  *   GET  /subs?season=S&week=W   submissions for one week (details only if locked)
  *   GET  /season?season=S        all submissions for locked weeks + submitted flags
+ *   POST /take                   {uid, pin, season, week, text} — hot take, editable until lock
+ *   POST /react                  {uid, pin, season, week, takeUid, vote: "fire"|"trash"|null}
+ *   POST /grade                  {uid, pin, season, week, takeUid, vote: "wine"|"milk"} — opens 3 weeks after the take
+ *   GET  /takes?season=S         all takes + reaction/grade votes + grading cutoff
+ *   POST /wyrpairs               {season, week, pairs: [[sid,sid]…]} — seed the week's "who ya rather" pairs (first write wins)
+ *   POST /wyrvote                {uid, pin, season, week, pairKey, pick}
+ *   GET  /wyr?season=S           stored pairs per week + all votes
  */
 
 const ALLOWED_ORIGINS = ["https://lbffl.com", "https://www.lbffl.com",
-  "http://localhost:8642", "http://127.0.0.1:8642"];
+  "http://localhost:8642", "http://127.0.0.1:8642",
+  "http://localhost:8123", "http://127.0.0.1:8123"];
 
 function cors(origin) {
   const o = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
@@ -48,6 +56,44 @@ async function listWeek(env, season, week) {
     if (v) out.push(v);
   }
   return out;
+}
+
+async function listAllKeys(env, prefix) {
+  const out = [];
+  let cursor;
+  do {
+    const res = await env.PICKS.list({ prefix, cursor });
+    out.push(...res.keys);
+    cursor = res.list_complete ? undefined : res.cursor;
+  } while (cursor);
+  return out;
+}
+
+let stateCache = { v: null, ts: 0 }; // NFL season/week, for grading eligibility
+async function nflState() {
+  if (stateCache.v && Date.now() - stateCache.ts < 300_000) return stateCache.v;
+  try {
+    const r = await fetch("https://api.sleeper.app/v1/state/nfl");
+    const s = await r.json();
+    stateCache = { v: { season: String(s.season), week: Number(s.week) || 0 }, ts: Date.now() };
+  } catch (e) {
+    stateCache = { v: { season: null, week: 0 }, ts: Date.now() };
+  }
+  return stateCache.v;
+}
+
+/* takes from this week are graded 3+ weeks later, once history has ruled */
+async function gradeableThroughWeek(env, season) {
+  const st = await nflState();
+  if (!st.season) return -1;
+  if (String(season) < st.season) return 99;
+  if (String(season) > st.season) return -1;
+  return st.week - 3;
+}
+
+function authed(env, b) {
+  const pins = JSON.parse(env.PINS || "{}");
+  return b && b.uid && pins[b.uid] && String(b.pin) === String(pins[b.uid]);
 }
 
 export default {
@@ -110,6 +156,117 @@ export default {
           out[wk] = { locked, subs };
         }
         return new Response(JSON.stringify(out), { headers });
+      }
+
+      if (req.method === "POST" && url.pathname === "/take") {
+        const b = await req.json();
+        if (!authed(env, b)) return new Response(JSON.stringify({ error: "bad pin" }), { status: 403, headers });
+        const { uid, season, week } = b;
+        const text = String(b.text || "").trim().slice(0, 280);
+        if (!season || !week || week < 1 || week > 18) return new Response(JSON.stringify({ error: "bad week" }), { status: 400, headers });
+        if (text.length < 3) return new Response(JSON.stringify({ error: "give us an actual take" }), { status: 400, headers });
+        if (await weekLocked(env, season, week)) {
+          return new Response(JSON.stringify({ error: "week is locked — takes are on the record" }), { status: 409, headers });
+        }
+        await env.PICKS.put(`take:${season}:${week}:${uid}`,
+          JSON.stringify({ uid, season: String(season), week: Number(week), text, ts: Date.now() }));
+        return new Response(JSON.stringify({ ok: true }), { headers });
+      }
+
+      if (req.method === "POST" && url.pathname === "/react") {
+        const b = await req.json();
+        if (!authed(env, b)) return new Response(JSON.stringify({ error: "bad pin" }), { status: 403, headers });
+        const { uid, season, week, takeUid, vote } = b;
+        if (![null, "fire", "trash"].includes(vote)) return new Response(JSON.stringify({ error: "bad vote" }), { status: 400, headers });
+        if (takeUid === uid) return new Response(JSON.stringify({ error: "you can't hype your own take" }), { status: 400, headers });
+        const take = await env.PICKS.get(`take:${season}:${week}:${takeUid}`);
+        if (!take) return new Response(JSON.stringify({ error: "no such take" }), { status: 404, headers });
+        const key = `react:${season}:${week}:${takeUid}:${uid}`;
+        if (vote === null) await env.PICKS.delete(key);
+        else await env.PICKS.put(key, vote);
+        return new Response(JSON.stringify({ ok: true }), { headers });
+      }
+
+      if (req.method === "POST" && url.pathname === "/grade") {
+        const b = await req.json();
+        if (!authed(env, b)) return new Response(JSON.stringify({ error: "bad pin" }), { status: 403, headers });
+        const { uid, season, week, takeUid, vote } = b;
+        if (!["wine", "milk"].includes(vote)) return new Response(JSON.stringify({ error: "bad vote" }), { status: 400, headers });
+        const through = await gradeableThroughWeek(env, season);
+        if (Number(week) > through) return new Response(JSON.stringify({ error: "not gradeable yet — history needs time" }), { status: 409, headers });
+        const take = await env.PICKS.get(`take:${season}:${week}:${takeUid}`);
+        if (!take) return new Response(JSON.stringify({ error: "no such take" }), { status: 404, headers });
+        await env.PICKS.put(`grade:${season}:${week}:${takeUid}:${uid}`, vote);
+        return new Response(JSON.stringify({ ok: true }), { headers });
+      }
+
+      if (req.method === "GET" && url.pathname === "/takes") {
+        const season = url.searchParams.get("season");
+        const takes = [];
+        for (const k of await listAllKeys(env, `take:${season}:`)) {
+          const v = await env.PICKS.get(k.name, "json");
+          if (v) takes.push(v);
+        }
+        const votes = async prefix => {
+          const out = {};
+          for (const k of await listAllKeys(env, `${prefix}:${season}:`)) {
+            const [, , wk, takeUid, voter] = k.name.split(":");
+            const v = await env.PICKS.get(k.name);
+            if (v) ((out[`${wk}:${takeUid}`] = out[`${wk}:${takeUid}`] || {})[voter] = v);
+          }
+          return out;
+        };
+        const body = {
+          takes: takes.sort((a, b) => b.week - a.week || a.ts - b.ts),
+          reacts: await votes("react"),
+          grades: await votes("grade"),
+          gradeableThroughWeek: await gradeableThroughWeek(env, season),
+        };
+        return new Response(JSON.stringify(body), { headers });
+      }
+
+      if (req.method === "POST" && url.pathname === "/wyrpairs") {
+        const b = await req.json();
+        const { season, week } = b;
+        if (!season || !week || week < 1 || week > 18) return new Response(JSON.stringify({ error: "bad week" }), { status: 400, headers });
+        const key = `wyrp:${season}:${week}`;
+        const existing = await env.PICKS.get(key, "json");
+        if (existing) return new Response(JSON.stringify({ pairs: existing }), { headers });
+        const pairs = Array.isArray(b.pairs) ? b.pairs.slice(0, 4) : [];
+        const ok = pairs.length >= 1 && pairs.every(p =>
+          Array.isArray(p) && p.length === 2 && p.every(x => /^\d{1,12}$/.test(String(x))) && p[0] !== p[1]);
+        if (!ok) return new Response(JSON.stringify({ error: "bad pairs" }), { status: 400, headers });
+        await env.PICKS.put(key, JSON.stringify(pairs));
+        return new Response(JSON.stringify({ pairs }), { headers });
+      }
+
+      if (req.method === "POST" && url.pathname === "/wyrvote") {
+        const b = await req.json();
+        if (!authed(env, b)) return new Response(JSON.stringify({ error: "bad pin" }), { status: 403, headers });
+        const { uid, season, week, pairKey, pick } = b;
+        const stored = await env.PICKS.get(`wyrp:${season}:${week}`, "json");
+        const pair = (stored || []).find(p => `${p[0]}|${p[1]}` === pairKey);
+        if (!pair) return new Response(JSON.stringify({ error: "no such matchup" }), { status: 404, headers });
+        if (!pair.includes(String(pick))) return new Response(JSON.stringify({ error: "pick one of the two" }), { status: 400, headers });
+        await env.PICKS.put(`wyrv:${season}:${week}:${pairKey}:${uid}`, String(pick));
+        return new Response(JSON.stringify({ ok: true }), { headers });
+      }
+
+      if (req.method === "GET" && url.pathname === "/wyr") {
+        const season = url.searchParams.get("season");
+        const pairs = {};
+        for (const k of await listAllKeys(env, `wyrp:${season}:`)) {
+          const wk = k.name.split(":")[2];
+          const v = await env.PICKS.get(k.name, "json");
+          if (v) pairs[wk] = v;
+        }
+        const votes = {};
+        for (const k of await listAllKeys(env, `wyrv:${season}:`)) {
+          const [, , wk, pairKey, voter] = k.name.split(":");
+          const v = await env.PICKS.get(k.name);
+          if (v) ((votes[`${wk}:${pairKey}`] = votes[`${wk}:${pairKey}`] || {})[voter] = v);
+        }
+        return new Response(JSON.stringify({ pairs, votes }), { headers });
       }
 
       return new Response(JSON.stringify({ error: "not found" }), { status: 404, headers });
