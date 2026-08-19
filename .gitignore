@@ -3,3 +3,4 @@ data/raw/players_nfl.json
 worker/.pins.json
 munchers-data/raw/players_nfl.json
 .wrangler/
+worker/.pins.munchers.json
