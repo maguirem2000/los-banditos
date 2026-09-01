@@ -334,8 +334,9 @@ for season in SEASONS:
                        "type": d["draft"]["type"], "picks": picks})
     drafts_out[season] = boards
 
+import datetime
 payload = {
-    "generatedAt": "2026-08-11",
+    "generatedAt": datetime.date.today().isoformat(),
     "leagueId": chain[-1]["league_id"],
     "leagueName": chain[-1]["name"],
     "seasons": SEASONS, "completeSeasons": COMPLETE, "currentSeason": CURRENT,
