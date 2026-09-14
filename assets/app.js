@@ -193,6 +193,7 @@
       if (LIVE.loaded) {
         const scores = [];
         for (let w = 1; w < D.currentLeague.playoffWeekStart; w++) {
+          if (!weekFinal(D.currentSeason, w)) continue;   // never learn from half-played weeks
           weekMatchups(D.currentSeason, w).forEach(x => {
             if (!x.played) return;
             if (x.a.uid === uid) scores.push(x.a.pts);
@@ -256,6 +257,7 @@
       const rows = await fetch(`https://api.sleeper.app/v1/league/${D.currentLeague.leagueId}/matchups/${wk}`).then(r => r.json());
       LIVE.matchups[wk] = rows || [];
       if (GD_SIM) simScores(wk);
+      fetchSchedule(true);   // game statuses move with the scores
       GD.last = new Date();
       if (["home", "schedule", "picks"].includes(state.view)) render();
     } catch (e) { /* transient network blip — next tick retries */ }
@@ -263,19 +265,26 @@
   }
   setInterval(refreshLive, 60000);
 
-  /* banked starter points + remaining projection for one team's live week */
+  /* banked starter points + remaining projection for one team's live week.
+     Remaining is driven by each starter's actual NFL game state:
+     final → nothing left; not started → full projection; in progress → projection × time left. */
   function gdEst(uid, wk) {
     const map = projCache[wk];
     if (!map || !LIVE.loaded) return null;
     const rid = LIVE.rosters.find(r => r.owner_id === uid)?.roster_id;
     const row = (LIVE.matchups[wk] || []).find(r => r.roster_id === rid);
     if (!row || !(row.starters || []).length) return null;
-    let act = 0, rem = 0, projTot = 0;
+    let act = 0, rem = 0, projTot = 0, left = 0, live = 0;
+    const haveSched = Object.keys(SCHED.games).length > 0;
     row.starters.forEach(pid => {
       const a = (row.players_points || {})[pid] || 0, pr = map[pid] || 0;
-      act += a; projTot += pr; rem += Math.max(0, pr - a);
+      act += a; projTot += pr;
+      let frac = haveSched ? gameFracLeft(wk, pid) : null;
+      if (frac === null) frac = haveSched ? 0 : (a > 0 ? 0 : 1);   // no schedule yet: crude fallback
+      if (frac > 0) { left++; if (frac < 1) live++; }
+      rem += pr * frac;
     });
-    return { act, rem, projTot, exp: act + rem };
+    return { act, rem, projTot, exp: act + rem, left, live, starters: row.starters.length };
   }
 
   /* live win probability: uncertainty shrinks as games burn down */
@@ -343,15 +352,20 @@
       swing = ` · <b style="color:${colorOf(who)}">${esc(nameOf(who))} ▲${Math.round(Math.abs(wp.pA - prev) * 100)}</b>`;
     }
     if (prev == null || Math.abs(wp.pA - prev) >= 0.005) GD.prev[k] = wp.pA;
+    const ea = gdEst(g.a.uid, g.week), eb = gdEst(g.b.uid, g.week);
+    const leftTxt = e => e ? (e.left === 0 ? "done" : `${e.left} left${e.live ? ` (${e.live} live)` : ""}`) : "";
+    const left = ea && eb ? ` · ${leftTxt(ea)} / ${leftTxt(eb)}` : "";
     return `<div class="wp"><div class="wp-bar"><div class="wp-a" style="width:${(wp.pA * 100).toFixed(1)}%;background:${colorOf(g.a.uid)}"></div><div class="wp-b" style="background:${colorOf(g.b.uid)}"></div></div>
-      <div class="wp-lbl">${esc(nameOf(g.a.uid))} <b>${Math.round(wp.pA * 100)}%</b> · <b>${Math.round((1 - wp.pA) * 100)}%</b> ${esc(nameOf(g.b.uid))}${swing} <small>proj final ${fmt(wp.expA, 0)}–${fmt(wp.expB, 0)}</small></div></div>`;
+      <div class="wp-lbl">${esc(nameOf(g.a.uid))} <b>${Math.round(wp.pA * 100)}%</b> · <b>${Math.round((1 - wp.pA) * 100)}%</b> ${esc(nameOf(g.b.uid))}${swing} <small>proj final ${fmt(wp.expA, 0)}–${fmt(wp.expB, 0)}${left}</small></div></div>`;
   }
 
   function gameRow(g, opts) {
     const o = opts || {};
     const played = g.played !== false;
+    const inProgress = played && !weekFinal(g.season, g.week);
     let aWin, bWin;
     if (g.type !== "regular" && g.winner) { aWin = g.winner === g.a.uid; bWin = g.winner === g.b.uid; }
+    else if (inProgress) { aWin = false; bWin = false; }   // nobody has "won" a live game
     else { aWin = played && g.a.pts > g.b.pts; bWin = played && g.b.pts > g.a.pts; }
     const side = (t, win, lose) => {
       let ptsHtml = played ? fmt(t.pts) : "—";
@@ -371,7 +385,7 @@
     return `<div class="matchup">
       ${side(g.a, aWin, played && bWin)}
       ${side(g.b, bWin, played && aWin)}
-      <div class="meta">${esc(g.season)} · Week ${g.week}${lbl ? " · " + lbl : ""}${played ? "" : " · upcoming"}</div>
+      <div class="meta">${esc(g.season)} · Week ${g.week}${lbl ? " · " + lbl : ""}${played ? (inProgress ? ' · <span style="color:var(--good)">in progress</span>' : "") : " · upcoming"}</div>
       ${wpLine(g)}
       ${grudge}
     </div>`;
@@ -509,6 +523,49 @@
         <div class="cd-sub">days until the ${esc(D.currentSeason)} season opener (${esc(koLbl)}). Draft is done — rosters are locked and loaded.</div>
       </div>`;
     }
+    if (!weekFinal(D.currentSeason, lastWk)) {
+      // games still going: live tracker for this week + the finished recap for last week
+      const prev = lastWk > 1 && weekFinal(D.currentSeason, lastWk - 1) ? recapCard(lastWk - 1) : "";
+      return liveTrackerCard(lastWk) + prev;
+    }
+    return recapCard(lastWk);
+  }
+
+  function liveTrackerCard(wk) {
+    const games = weekMatchups(D.currentSeason, wk).filter(g => g.played);
+    if (!games.length) return "";
+    if (!projCache[wk]) fetchProjections(wk);
+    const items = [];
+    const topTeam = games.flatMap(g => [g.a, g.b]).sort((a, b) => b.pts - a.pts)[0];
+    items.push(`<li>🔥 <b>Top score so far:</b> ${esc(nameOf(topTeam.uid))} with <b>${fmt(topTeam.pts)}</b></li>`);
+    const wps = games.map(g => ({ g, wp: liveWinProb(g) })).filter(x => x.wp);
+    if (wps.length) {
+      const tight = wps.slice().sort((a, b) => Math.abs(a.wp.pA - 0.5) - Math.abs(b.wp.pA - 0.5))[0];
+      const lead = tight.wp.pA >= 0.5 ? tight.g.a : tight.g.b, trail = tight.wp.pA >= 0.5 ? tight.g.b : tight.g.a;
+      items.push(`<li>😅 <b>Tightest game:</b> ${esc(nameOf(lead.uid))} ${Math.round(Math.max(tight.wp.pA, 1 - tight.wp.pA) * 100)}% over ${esc(nameOf(trail.uid))} — proj ${fmt(Math.max(tight.wp.expA, tight.wp.expB), 0)}–${fmt(Math.min(tight.wp.expA, tight.wp.expB), 0)}</li>`);
+      const rout = wps.slice().sort((a, b) => Math.abs(b.wp.expA - b.wp.expB) - Math.abs(a.wp.expA - a.wp.expB))[0];
+      const rl = rout.wp.expA >= rout.wp.expB ? rout.g.a : rout.g.b, rt = rout.wp.expA >= rout.wp.expB ? rout.g.b : rout.g.a;
+      items.push(`<li>💥 <b>Beatdown brewing:</b> ${esc(nameOf(rl.uid))} projected to beat ${esc(nameOf(rt.uid))} by ${fmt(Math.abs(rout.wp.expA - rout.wp.expB), 0)}</li>`);
+    }
+    if (LIVE.loaded && LIVE.matchups[wk]) {
+      const r2u = {}; LIVE.rosters.forEach(r => r2u[r.roster_id] = r.owner_id);
+      let top = { pts: -1 };
+      LIVE.matchups[wk].forEach(row => {
+        const starters = new Set(row.starters || []);
+        Object.entries(row.players_points || {}).forEach(([pid, pts]) => {
+          if (starters.has(pid) && (pts || 0) > top.pts) top = { pid, pts: pts || 0, uid: r2u[row.roster_id] };
+        });
+      });
+      if (top.pid) items.push(`<li>⭐ <b>Player of the Week (so far):</b> ${esc(pname(top.pid))} with <b>${fmt(top.pts)}</b> for ${esc(nameOf(top.uid))}</li>`);
+    }
+    const ests = games.flatMap(g => [g.a.uid, g.b.uid]).map(u => gdEst(u, wk)).filter(Boolean);
+    const leftTotal = ests.reduce((s, e) => s + e.left, 0);
+    return `<div class="card">
+      <h2>Week ${wk} Live Tracker <span class="pill live">LIVE</span> <span class="tag">${leftTotal ? `${leftTotal} starters still to play` : "waiting on final stats"} · full recap posts when the week is final</span></h2>
+      <ul class="watch">${items.join("")}</ul></div>`;
+  }
+
+  function recapCard(lastWk) {
     const games = weekMatchups(D.currentSeason, lastWk).filter(g => g.played);
     if (!games.length) return "";
     const byMargin = games.slice().sort((a, b) => Math.abs(a.a.pts - a.b.pts) - Math.abs(b.a.pts - b.b.pts));
@@ -601,6 +658,7 @@
         rows.forEach(r => divmap[r.uid] = r.division);
         let w = 0, l = 0;
         for (let wk = 1; wk < (sd ? sd.playoffWeekStart : 15); wk++) {
+          if (!weekFinal(season, wk)) continue;
           weekMatchups(season, wk).forEach(g => {
             if (!g.played) return;
             const me = g.a.uid === uid ? g.a : g.b.uid === uid ? g.b : null;
@@ -676,19 +734,76 @@
 
   /* ---------- SCHEDULE ---------- */
   const projCache = {};   // week -> {pid: proj pts}
+  const projGame = {};    // week -> {pid: nfl game_id}  (which NFL game each player is in)
+  const SCHED = { games: {}, loadedAt: 0, pending: false };  // game_id -> {status, home, away, metadata}
+  const POS_Q = ["QB", "RB", "WR", "TE", "K", "DEF"].map(p => `position[]=${p}`).join("&");
+
   function fetchProjections(week) {
     if (projCache[week] || projCache["pending" + week]) return;
     projCache["pending" + week] = true;
-    fetch(`https://api.sleeper.app/v1/projections/nfl/regular/${D.currentSeason}/${week}`)
+    fetch(`https://api.sleeper.app/projections/nfl/${D.currentSeason}/${week}?season_type=regular&${POS_Q}`)
       .then(r => r.json())
       .then(j => {
-        const map = {};
-        if (Array.isArray(j)) j.forEach(x => { if (x.player_id) map[x.player_id] = (x.stats || {}).pts_ppr || 0; });
-        else Object.entries(j || {}).forEach(([pid, st]) => { map[pid] = (st || {}).pts_ppr || 0; });
-        projCache[week] = map;
-        if (state.view === "schedule" || state.view === "home") render();
+        const map = {}, games = {};
+        (Array.isArray(j) ? j : []).forEach(x => {
+          if (!x.player_id) return;
+          const st = x.stats || {};
+          map[x.player_id] = st.pts_ppr ?? st.pts_half_ppr ?? 0;
+          if (x.game_id) games[x.player_id] = x.game_id;
+        });
+        projCache[week] = map; projGame[week] = games;
+        if (state.view === "schedule" || state.view === "home" || state.view === "picks") render();
       })
-      .catch(() => { projCache[week] = {}; });
+      .catch(() => { projCache[week] = {}; projGame[week] = {}; });
+    fetchSchedule();
+  }
+
+  /* NFL game statuses (pre_game / in_game / complete) — refreshed on gameday ticks */
+  function fetchSchedule(force) {
+    if (SCHED.pending) return;
+    if (!force && Date.now() - SCHED.loadedAt < 55_000) return;
+    SCHED.pending = true;
+    fetch(`https://api.sleeper.app/schedule/nfl/regular/${D.currentSeason}`)
+      .then(r => r.json())
+      .then(list => {
+        const games = {};
+        (Array.isArray(list) ? list : []).forEach(g => { if (g.game_id) games[g.game_id] = g; });
+        SCHED.games = games; SCHED.loadedAt = Date.now(); SCHED.pending = false;
+        if (["home", "schedule", "picks", "standings", "power"].includes(state.view)) render();
+      })
+      .catch(() => { SCHED.pending = false; });
+  }
+
+  /* fraction of a player's game still to be played: 1 = hasn't kicked off, 0 = final */
+  function gameFracLeft(week, pid) {
+    const gid = (projGame[week] || {})[pid];
+    if (!gid) return null;                       // bye / unknown → treat as no points coming
+    const g = SCHED.games[gid];
+    if (!g) return null;
+    if (g.status === "complete") return 0;
+    if (g.status === "in_game") {
+      const md = g.metadata || {};
+      const q = Number(md.quarter_num || md.quarter || 0);
+      const clk = String(md.time_remaining || md.clock || "");
+      if (q >= 1) {
+        const m = clk.match(/(\d+):(\d+)/);
+        const secsLeftInQ = m ? (+m[1] * 60 + +m[2]) : 450;
+        return Math.max(0, Math.min(1, ((4 - q) * 900 + Math.min(900, secsLeftInQ)) / 3600));
+      }
+      return 0.5;                                 // live, no clock exposed → assume halfway
+    }
+    return 1;                                     // pre_game
+  }
+
+  /* is every NFL game of this week final? (falls back to Sleeper's week rollover) */
+  function weekFinal(season, week) {
+    if (season !== D.currentSeason) return true;
+    if (!LIVE.loaded || !LIVE.seasonActive) return true;   // baked snapshot / offseason
+    if (LIVE.week > week) return true;
+    const wkGames = Object.values(SCHED.games).filter(g => Number(g.week) === Number(week));
+    if (wkGames.length) return wkGames.every(g => g.status === "complete");
+    fetchSchedule();   // not loaded yet — assume live, re-render when statuses arrive
+    return false;
   }
   function projectedPts(week, uid) {
     const map = projCache[week];
@@ -840,6 +955,7 @@
     if (season === D.currentSeason && LIVE.loaded) {
       games = [];
       for (let w = 1; w < D.currentLeague.playoffWeekStart; w++) {
+        if (!weekFinal(season, w)) continue;   // in-progress week isn't a result yet
         weekMatchups(season, w).forEach(g => { if (g.played) games.push(g); });
       }
     } else {
@@ -1118,7 +1234,7 @@
     if (pk.season) {
       const scores = {};
       Object.entries(pk.season).forEach(([wk, data]) => {
-        if (!data.locked) return;
+        if (!data.locked || !weekFinal(D.currentSeason, Number(wk))) return;   // grade only finished weeks
         const wkGames = weekMatchups(D.currentSeason, Number(wk)).filter(g => g.played);
         data.subs.forEach(s => {
           if (!s.picks) return;
@@ -2155,7 +2271,8 @@
     const pweek = D.currentLeague.playoffWeekStart;
     const played = [], future = [];
     for (let w = 1; w < pweek; w++) {
-      weekMatchups(D.currentSeason, w).forEach(g => (g.played ? played : future).push(g));
+      const fin = weekFinal(D.currentSeason, w);
+      weekMatchups(D.currentSeason, w).forEach(g => ((g.played && fin) ? played : future).push(g));
     }
     const wksPlayed = new Set(played.map(g => g.week)).size;
     if (wksPlayed < 3 || !future.length) return null;

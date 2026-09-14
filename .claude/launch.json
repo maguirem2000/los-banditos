@@ -4,8 +4,26 @@
     {
       "name": "banditos",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8642", "--directory", "/Users/maguiremathis/macbook air/los-banditos"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8642",
+        "--directory",
+        "/Users/maguiremathis/macbook air/los-banditos"
+      ],
       "port": 8642
+    },
+    {
+      "name": "banditos-site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8643",
+        "--directory",
+        "/Users/maguiremathis/macbook air/los-banditos"
+      ],
+      "port": 8643
     }
   ]
 }
